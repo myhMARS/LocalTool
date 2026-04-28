@@ -1,5 +1,9 @@
-from PyQt6.QtCore import QSize, Qt
+import base64
+import re
+
+from PyQt6.QtCore import QSize, Qt, QUrl
 from PyQt6.QtGui import QColor
+from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -26,6 +30,7 @@ class MainWindow(QMainWindow):
         self._fetch_worker: FetchListWorker | None = None
         self._body_worker: FetchBodyWorker | None = None
         self._send_worker: SendWorker | None = None
+        self._selected_msg_id: str | None = None
 
         self.setWindowTitle("Email")
         self.setMinimumSize(960, 580)
@@ -347,6 +352,12 @@ class MainWindow(QMainWindow):
 
         self.detail_body = QWebEngineView()
         self.detail_body.setStyleSheet("background: #F9FAFB;")
+        self.detail_body.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.AutoLoadImages, True
+        )
+        self.detail_body.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
+        )
         self.detail_body.setHtml(
             "<html><body style='margin:0;background:#F9FAFB;'></body></html>"
         )
@@ -509,6 +520,7 @@ class MainWindow(QMainWindow):
 
         self._show_loading_skeleton()
         self.detail_stack.setCurrentIndex(1)
+        self._selected_msg_id = em["id"]
 
         folder = FOLDER_SENT if is_sent else FOLDER_INBOX
         self._body_worker = FetchBodyWorker(self.cfg, em["id"], folder)
@@ -529,17 +541,26 @@ class MainWindow(QMainWindow):
             "</div></body></html>"
         )
 
-    def _on_body_fetched(self, html_b: str, text_b: str, attachments: list | None = None):
+    def _on_body_fetched(self, html_b: str, text_b: str, attachments: list | None = None,
+                         inline_images: dict | None = None):
         self._show_attachments(attachments or [])
+        self._mark_as_read()
         if html_b:
+            if inline_images:
+                html_b = self._resolve_cid_images(html_b, inline_images)
             wrapped = (
-                "<html><head><meta charset='utf-8'><style>"
+                "<html><head><meta charset='utf-8'>"
+                "<meta http-equiv='Content-Security-Policy' "
+                "content=\"default-src https: http: 'unsafe-inline' 'unsafe-eval' data: blob:;\">"
+                "<style>"
                 "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; "
-                "line-height: 1.6; color: #111827; padding: 8px 0; }"
+                "line-height: 1.6; color: #111827; padding: 8px 0; "
+                "word-wrap: break-word; overflow-wrap: break-word; }"
                 "a { color: #4D6BFE; }"
                 "blockquote { border-left: 3px solid #E5E7EB; margin-left: 0; padding-left: 16px; "
                 "color: #6B7280; }"
-                "img { max-width: 100%; height: auto; }"
+                "img { max-width: 100% !important; height: auto !important; }"
+                "table { max-width: 100% !important; }"
                 "pre, code { background: #F3F4F6; border-radius: 6px; padding: 2px 6px; "
                 "font-family: 'Cascadia Code', 'JetBrains Mono', monospace; font-size: 13px; }"
                 "pre { padding: 12px 16px; overflow-x: auto; }"
@@ -547,7 +568,7 @@ class MainWindow(QMainWindow):
                 + html_b +
                 "</body></html>"
             )
-            self.detail_body.setHtml(wrapped)
+            self.detail_body.setHtml(wrapped, QUrl("http://localhost"))
         elif text_b:
             text = text_b.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             text = text.replace("\n", "<br>")
@@ -567,6 +588,48 @@ class MainWindow(QMainWindow):
                 "<p style='color:#D1D5DB;font-size:14px;'>(Empty message)</p>"
                 "</body></html>"
             )
+
+    def _mark_as_read(self):
+        if self._current_folder == FOLDER_SENT or not self._selected_msg_id:
+            return
+        src = self._active_emails()
+        em = next((e for e in src if e["id"] == self._selected_msg_id), None)
+        if em and em.get("unread"):
+            em["unread"] = False
+            for i in range(self.email_list.count()):
+                item = self.email_list.item(i)
+                if item and item.data(Qt.ItemDataRole.UserRole) == self._selected_msg_id:
+                    w = self.email_list.itemWidget(item)
+                    if w:
+                        w.set_unread(False)
+                    break
+            self._update_count_label()
+
+    def _update_count_label(self):
+        total = len(self._active_emails())
+        unread_count = sum(1 for e in self._active_emails() if e.get("unread"))
+        if self._unread_only:
+            visible = len([e for e in self._active_emails() if e.get("unread")])
+            self.list_count.setText(f"{visible}/{total}")
+        else:
+            self.list_count.setText(f"{total}")
+        self.status_bar.showMessage(
+            f"{total} messages in {'Sent' if self._current_folder == FOLDER_SENT else 'Inbox'}  ({unread_count} unread)"
+        )
+
+    def _resolve_cid_images(self, html: str, inline_images: dict[str, dict]) -> str:
+        def _replace_cid(m: re.Match) -> str:
+            cid = m.group(1)
+            img = inline_images.get(cid)
+            if img:
+                b64 = base64.b64encode(img["data"]).decode()
+                return f'data:{img["content_type"]};base64,{b64}'
+            return m.group(0)
+        html = re.sub(r'(src|url)\s*=\s*["\']cid:([^"\']+)["\']', _replace_cid, html)
+        html = re.sub(r'(src|url)\s*=\s*cid:([a-zA-Z0-9@._-]+)', _replace_cid, html)
+        html = re.sub(r'url\(["\']?\s*cid:([a-zA-Z0-9@._-]+)\s*["\']?\)', _replace_cid, html)
+        html = re.sub(r'cid:([a-zA-Z0-9@._-]+)', _replace_cid, html)
+        return html
 
     def _show_attachments(self, attachments: list[dict]):
         # clear previous

@@ -1,6 +1,8 @@
 import os
 import sys
 
+os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--log-level=3"
+
 from localtool.core import BaseTool
 from localtool.mailer.config import CONFIG_FILE, unlock_config
 from localtool.mailer.style import STYLE

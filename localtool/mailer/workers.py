@@ -98,7 +98,7 @@ class FetchListWorker(QThread):
 
 
 class FetchBodyWorker(QThread):
-    finished = pyqtSignal(str, str, list)
+    finished = pyqtSignal(str, str, list, dict)
     error = pyqtSignal(str)
 
     def __init__(self, cfg: dict, msg_id: str, folder: str = FOLDER_INBOX):
@@ -116,14 +116,18 @@ class FetchBodyWorker(QThread):
                 self.error.emit(f'folder "{self.folder}" not found')
                 return
             status, msg_data = conn.fetch(self.msg_id.encode(), "(RFC822)")
-            conn.logout()
             if status != "OK":
+                conn.logout()
                 self.error.emit("fetch failed")
                 return
             raw = msg_data[0][1]
             msg = email.parser.BytesParser().parsebytes(raw)
-            html_b, text_b, attachments = load_email_body(msg)
-            self.finished.emit(html_b, text_b, attachments)
+            # mark as seen on server (inbox only)
+            if self.folder == FOLDER_INBOX:
+                conn.store(self.msg_id.encode(), "+FLAGS", "\\Seen")
+            conn.logout()
+            html_b, text_b, attachments, inline_images = load_email_body(msg)
+            self.finished.emit(html_b, text_b, attachments, inline_images)
         except Exception as e:
             self.error.emit(str(e))
 
