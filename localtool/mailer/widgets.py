@@ -63,7 +63,7 @@ class EmailItemWidget(QWidget):
         root.setAlignment(self.unread_dot, Qt.AlignmentFlag.AlignVCenter)
 
         # avatar
-        avatar = AvatarWidget(em["from"], 42)
+        avatar = AvatarWidget(em.get("display", em["from"]), 42)
         root.addWidget(avatar)
 
         # text column
@@ -74,7 +74,7 @@ class EmailItemWidget(QWidget):
         top_row = QHBoxLayout()
         top_row.setSpacing(8)
 
-        self._sender_full = em["from"]
+        self._sender_full = em.get("display", em["from"])
         self.sender = QLabel(self._sender_full)
         self.sender.setStyleSheet(
             "font-weight: 700; font-size: 13px; color: #111827;"

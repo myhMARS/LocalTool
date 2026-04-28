@@ -2,15 +2,17 @@ from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
-    QMessageBox, QPushButton, QSplitter, QStackedWidget, QStatusBar,
-    QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMainWindow, QMessageBox, QPushButton, QSplitter, QStackedWidget,
+    QStatusBar, QVBoxLayout, QWidget,
 )
 
 from localtool.mailer.dialogs import ComposeDialog, SettingsDialog
 from localtool.mailer.style import avatar_color, STYLE
 from localtool.mailer.widgets import AvatarWidget, EmailItemWidget, SpinnerWidget
-from localtool.mailer.workers import FetchBodyWorker, FetchListWorker, SendWorker
+from localtool.mailer.workers import (
+    FOLDER_INBOX, FOLDER_SENT, FetchBodyWorker, FetchListWorker, SendWorker,
+)
 
 
 class MainWindow(QMainWindow):
@@ -18,6 +20,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.cfg = cfg
         self.emails: list[dict] = []
+        self._sent_emails: list[dict] = []
+        self._current_folder = FOLDER_INBOX
         self._unread_only = False
         self._fetch_worker: FetchListWorker | None = None
         self._body_worker: FetchBodyWorker | None = None
@@ -53,7 +57,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(24, 14, 24, 14)
         layout.setSpacing(12)
 
-        brand = QLabel("✉  Email")
+        brand = QLabel("Email")
         brand.setObjectName("toolbar_title")
         layout.addWidget(brand)
 
@@ -111,17 +115,55 @@ class MainWindow(QMainWindow):
 
         header = QWidget()
         header.setStyleSheet(
-            "background: #F9FAFB; border-bottom: 1px solid #E5E7EB; padding: 14px 20px;"
+            "background: #F9FAFB; border-bottom: 1px solid #E5E7EB;"
         )
         hh = QHBoxLayout(header)
-        hh.setContentsMargins(20, 12, 20, 12)
-        hh.setSpacing(8)
+        hh.setContentsMargins(16, 10, 16, 10)
+        hh.setSpacing(10)
 
-        inbox = QLabel("Inbox")
-        inbox.setStyleSheet(
-            "font-size: 15px; font-weight: 800; color: #111827; letter-spacing: -0.2px;"
+        # folder tabs
+        folder_tabs = QWidget()
+        folder_tabs.setStyleSheet(
+            "QWidget#folder_tabs { background: #F3F4F6; border-radius: 10px; }"
+            "QWidget#folder_tabs > QPushButton { background: transparent; border: none; "
+            "border-radius: 8px; padding: 5px 14px; color: #6B7280; font-size: 12px; "
+            "font-weight: 700; }"
+            "QWidget#folder_tabs > QPushButton:hover { color: #4D6BFE; }"
+            "QWidget#folder_tabs > QPushButton#folder_active { background: #FFFFFF; "
+            "color: #4D6BFE; }"
         )
-        hh.addWidget(inbox)
+        folder_tabs.setObjectName("folder_tabs")
+        ft_layout = QHBoxLayout(folder_tabs)
+        ft_layout.setContentsMargins(3, 3, 3, 3)
+        ft_layout.setSpacing(0)
+
+        self.inbox_tab = QPushButton("Inbox")
+        self.inbox_tab.setObjectName("folder_active")
+        self.inbox_tab.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.inbox_tab.clicked.connect(lambda: self._switch_folder(FOLDER_INBOX))
+        ft_layout.addWidget(self.inbox_tab)
+
+        self.sent_tab = QPushButton("Sent")
+        self.sent_tab.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sent_tab.clicked.connect(lambda: self._switch_folder(FOLDER_SENT))
+        ft_layout.addWidget(self.sent_tab)
+
+        hh.addWidget(folder_tabs)
+
+        # search input
+        self._search_text = ""
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search...")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setMaximumWidth(160)
+        self.search_input.setMaximumHeight(30)
+        self.search_input.setStyleSheet(
+            "QLineEdit { background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; "
+            "padding: 5px 10px; font-size: 12px; color: #111827; }"
+            "QLineEdit:focus { border: 1.5px solid #4D6BFE; }"
+        )
+        self.search_input.textChanged.connect(self._on_search_changed)
+        hh.addWidget(self.search_input)
 
         hh.addStretch()
 
@@ -158,7 +200,6 @@ class MainWindow(QMainWindow):
             "font-size: 11px; color: #6B7280; font-weight: 600; padding: 0px 8px; border: none;"
         )
         self.list_count.setMinimumWidth(28)
-        # wrap spinner so it stays centered when stacked widget is wider than 14px
         spinner_wrap = QWidget()
         spinner_wrap.setStyleSheet("background: transparent;")
         sw_layout = QHBoxLayout(spinner_wrap)
@@ -175,6 +216,7 @@ class MainWindow(QMainWindow):
         pill_layout.addWidget(self._count_stack, 0, Qt.AlignmentFlag.AlignVCenter)
 
         hh.addWidget(pill)
+        self._filter_pill = pill
         layout.addWidget(header)
 
         self.email_list = QListWidget()
@@ -206,9 +248,9 @@ class MainWindow(QMainWindow):
         ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ph.setSpacing(0)
 
-        icon = QLabel("✉")
+        icon = QLabel("@")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("font-size: 56px; color: #D1D5DB; margin-bottom: 12px;")
+        icon.setStyleSheet("font-size: 56px; color: #D1D5DB; margin-bottom: 12px; font-weight: 300;")
         ph.addWidget(icon)
 
         title = QLabel("No message selected")
@@ -311,32 +353,75 @@ class MainWindow(QMainWindow):
     # Refresh
     # ==================================================================
 
+    def _switch_folder(self, folder: str):
+        if self._current_folder == folder:
+            return
+        self._current_folder = folder
+        self._unread_only = False
+        self._search_text = ""
+        self.search_input.clear()
+        self.filter_btn.setText("All")
+        # update tab styles
+        self.inbox_tab.setObjectName("folder_active" if folder == FOLDER_INBOX else "")
+        self.inbox_tab.style().unpolish(self.inbox_tab)
+        self.inbox_tab.style().polish(self.inbox_tab)
+        self.sent_tab.setObjectName("folder_active" if folder == FOLDER_SENT else "")
+        self.sent_tab.style().unpolish(self.sent_tab)
+        self.sent_tab.style().polish(self.sent_tab)
+        # hide filter pill for Sent (no unread concept)
+        self._filter_pill.setVisible(folder == FOLDER_INBOX)
+        self.detail_stack.setCurrentIndex(0)
+        cached = self._sent_emails if folder == FOLDER_SENT else self.emails
+        if cached:
+            self._apply_filter()
+        else:
+            self._refresh_list()
+
+    def _active_emails(self) -> list[dict]:
+        return self._sent_emails if self._current_folder == FOLDER_SENT else self.emails
+
     def _refresh_list(self):
-        self.status_bar.showMessage("Loading messages...")
-        self.email_list.setEnabled(False)
+        folder = FOLDER_SENT if self._current_folder == FOLDER_SENT else FOLDER_INBOX
+        self.status_bar.showMessage(f"Refreshing {folder.lower()}...")
         self._count_stack.setCurrentIndex(0)
         self._spinner.start()
-        self._fetch_worker = FetchListWorker(self.cfg)
+        self._fetch_worker = FetchListWorker(self.cfg, folder)
         self._fetch_worker.finished.connect(self._on_list_fetched)
         self._fetch_worker.error.connect(self._on_list_error)
         self._fetch_worker.start()
 
     def _on_list_fetched(self, emails: list[dict], status: str):
-        self.emails = emails
+        if self._current_folder == FOLDER_SENT:
+            self._sent_emails = emails
+        else:
+            self.emails = emails
         self._spinner.stop()
         self._count_stack.setCurrentIndex(1)
         self._apply_filter()
         self.email_list.setEnabled(True)
         self.status_bar.showMessage(status)
 
+    def _on_search_changed(self, text: str):
+        self._search_text = text.strip().lower()
+        self._apply_filter()
+
     def _toggle_filter(self):
+        if self._current_folder == FOLDER_SENT:
+            return
         self._unread_only = not self._unread_only
         self.filter_btn.setText("Unread" if self._unread_only else "All")
         self._apply_filter()
 
     def _apply_filter(self):
         self.email_list.clear()
-        visible = [e for e in self.emails if not self._unread_only or e.get("unread", False)]
+        src = self._active_emails()
+        visible = [e for e in src if not self._unread_only or e.get("unread", False)]
+        if self._search_text:
+            visible = [
+                e for e in visible
+                if self._search_text in e.get("display", "").lower()
+                or self._search_text in e.get("subject", "").lower()
+            ]
         for em in visible:
             item = QListWidgetItem()
             widget = EmailItemWidget(em)
@@ -345,7 +430,7 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, em["id"])
             self.email_list.addItem(item)
             self.email_list.setItemWidget(item, widget)
-        total = len(self.emails)
+        total = len(self._active_emails())
         shown = len(visible)
         if self._unread_only:
             self.list_count.setText(f"{shown}/{total}")
@@ -385,23 +470,32 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         msg_id = item.data(Qt.ItemDataRole.UserRole)
-        em = next((e for e in self.emails if e["id"] == msg_id), None)
+        em = next((e for e in self._active_emails() if e["id"] == msg_id), None)
         if em is None:
             return
 
+        is_sent = self._current_folder == FOLDER_SENT
         self.detail_subject.setText(em["subject"])
-        self.detail_from.setText(em["from"])
-        self.detail_to.setText(f"to {self.cfg.get('email', 'me')}")
         self.detail_date.setText(em["date"])
 
-        self.avatar_widget._name = em["from"]
-        self.avatar_widget._bg = QColor(avatar_color(em["from"]))
+        if is_sent:
+            self.detail_from.setText(f"to {em.get('to', '')}" if em.get('to') else "")
+            self.detail_to.setText(f"from {self.cfg.get('email', 'me')}")
+            display_name = em.get("display", em.get("to", ""))
+            self.avatar_widget._name = display_name
+            self.avatar_widget._bg = QColor(avatar_color(display_name))
+        else:
+            self.detail_from.setText(em["from"])
+            self.detail_to.setText(f"to {self.cfg.get('email', 'me')}")
+            self.avatar_widget._name = em["from"]
+            self.avatar_widget._bg = QColor(avatar_color(em["from"]))
         self.avatar_widget.update()
 
         self._show_loading_skeleton()
         self.detail_stack.setCurrentIndex(1)
 
-        self._body_worker = FetchBodyWorker(self.cfg, em["id"])
+        folder = FOLDER_SENT if is_sent else FOLDER_INBOX
+        self._body_worker = FetchBodyWorker(self.cfg, em["id"], folder)
         self._body_worker.finished.connect(self._on_body_fetched)
         self._body_worker.error.connect(self._on_body_error)
         self._body_worker.start()

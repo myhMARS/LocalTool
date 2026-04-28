@@ -40,7 +40,7 @@ def _make_icon():
     font.setPixelSize(20)
     font.setBold(True)
     p.setFont(font)
-    p.drawText(QRectF(0, 10, 64, 64), Qt.AlignmentFlag.AlignCenter, "✉")
+    p.drawText(QRectF(0, 10, 64, 64), Qt.AlignmentFlag.AlignCenter, "@")
 
     p.end()
     return QIcon(px)

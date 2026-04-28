@@ -22,9 +22,9 @@ class LoginDialog(QDialog):
         layout.setContentsMargins(48, 36, 48, 36)
         layout.setSpacing(0)
 
-        icon = QLabel("✉")
+        icon = QLabel("@")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("font-size: 36px; color: #4D6BFE; margin-bottom: 8px;")
+        icon.setStyleSheet("font-size: 36px; color: #4D6BFE; margin-bottom: 8px; font-weight: 300;")
         layout.addWidget(icon)
 
         title = QLabel("Email")
