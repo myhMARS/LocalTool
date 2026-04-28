@@ -1,0 +1,7 @@
+.idea/
+.venv/
+build/
+localtool.egg-info/
+__pycache__/
+uv.lock
+*.pyc
