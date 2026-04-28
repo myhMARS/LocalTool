@@ -98,7 +98,7 @@ class FetchListWorker(QThread):
 
 
 class FetchBodyWorker(QThread):
-    finished = pyqtSignal(str, str)
+    finished = pyqtSignal(str, str, list)
     error = pyqtSignal(str)
 
     def __init__(self, cfg: dict, msg_id: str, folder: str = FOLDER_INBOX):
@@ -122,8 +122,8 @@ class FetchBodyWorker(QThread):
                 return
             raw = msg_data[0][1]
             msg = email.parser.BytesParser().parsebytes(raw)
-            html_b, text_b = load_email_body(msg)
-            self.finished.emit(html_b, text_b)
+            html_b, text_b, attachments = load_email_body(msg)
+            self.finished.emit(html_b, text_b, attachments)
         except Exception as e:
             self.error.emit(str(e))
 

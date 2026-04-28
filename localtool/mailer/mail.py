@@ -22,13 +22,23 @@ def decode_rfc2047(value: str) -> str:
     return "".join(result)
 
 
-def load_email_body(msg: Message) -> tuple[str, str]:
+def load_email_body(msg: Message) -> tuple[str, str, list[dict]]:
     html_body, text_body = "", ""
+    attachments: list[dict] = []
     if msg.is_multipart():
         for part in msg.walk():
             ct = part.get_content_type()
+            disp = part.get_content_disposition()
             payload = part.get_payload(decode=True)
-            if payload:
+            if disp == "attachment" and payload:
+                filename = part.get_filename() or "unnamed"
+                attachments.append({
+                    "filename": filename,
+                    "content_type": ct,
+                    "size": len(payload),
+                    "data": payload,
+                })
+            elif payload:
                 if ct == "text/html" and not html_body:
                     html_body = payload.decode(errors="replace")
                 elif ct == "text/plain" and not text_body:
@@ -42,7 +52,7 @@ def load_email_body(msg: Message) -> tuple[str, str]:
                 html_body = body
             else:
                 text_body = body
-    return html_body, text_body
+    return html_body, text_body, attachments
 
 
 def format_date(date_str: str) -> str:

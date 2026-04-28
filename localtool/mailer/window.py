@@ -3,8 +3,8 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QPushButton, QSplitter, QStackedWidget,
-    QStatusBar, QVBoxLayout, QWidget,
+    QMainWindow, QMessageBox, QPushButton, QSizePolicy, QSplitter,
+    QStackedWidget, QStatusBar, QVBoxLayout, QWidget,
 )
 
 from localtool.mailer.dialogs import ComposeDialog, SettingsDialog
@@ -117,11 +117,14 @@ class MainWindow(QMainWindow):
         header.setStyleSheet(
             "background: #F9FAFB; border-bottom: 1px solid #E5E7EB;"
         )
-        hh = QHBoxLayout(header)
-        hh.setContentsMargins(16, 10, 16, 10)
-        hh.setSpacing(10)
+        hv = QVBoxLayout(header)
+        hv.setContentsMargins(16, 10, 16, 8)
+        hv.setSpacing(8)
 
-        # folder tabs
+        # ── row 1: folder tabs + filter pill ──
+        row1 = QHBoxLayout()
+        row1.setSpacing(10)
+
         folder_tabs = QWidget()
         folder_tabs.setStyleSheet(
             "QWidget#folder_tabs { background: #F3F4F6; border-radius: 10px; }"
@@ -148,24 +151,8 @@ class MainWindow(QMainWindow):
         self.sent_tab.clicked.connect(lambda: self._switch_folder(FOLDER_SENT))
         ft_layout.addWidget(self.sent_tab)
 
-        hh.addWidget(folder_tabs)
-
-        # search input
-        self._search_text = ""
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search...")
-        self.search_input.setClearButtonEnabled(True)
-        self.search_input.setMaximumWidth(160)
-        self.search_input.setMaximumHeight(30)
-        self.search_input.setStyleSheet(
-            "QLineEdit { background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; "
-            "padding: 5px 10px; font-size: 12px; color: #111827; }"
-            "QLineEdit:focus { border: 1.5px solid #4D6BFE; }"
-        )
-        self.search_input.textChanged.connect(self._on_search_changed)
-        hh.addWidget(self.search_input)
-
-        hh.addStretch()
+        row1.addWidget(folder_tabs)
+        row1.addStretch()
 
         # filter + count grouped pill
         pill = QWidget()
@@ -215,8 +202,25 @@ class MainWindow(QMainWindow):
         self._count_stack.setCurrentIndex(1)
         pill_layout.addWidget(self._count_stack, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        hh.addWidget(pill)
+        pill.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        row1.addWidget(pill, 0, Qt.AlignmentFlag.AlignVCenter)
         self._filter_pill = pill
+        hv.addLayout(row1)
+
+        # ── row 2: search bar ──
+        self._search_text = ""
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search...")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setMaximumHeight(30)
+        self.search_input.setStyleSheet(
+            "QLineEdit { background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; "
+            "padding: 5px 10px; font-size: 12px; color: #111827; }"
+            "QLineEdit:focus { border: 1.5px solid #4D6BFE; }"
+        )
+        self.search_input.textChanged.connect(self._on_search_changed)
+        hv.addWidget(self.search_input)
+
         layout.addWidget(header)
 
         self.email_list = QListWidget()
@@ -326,6 +330,18 @@ class MainWindow(QMainWindow):
             "QPushButton:hover { background: #EEF2FF; border-color: #4D6BFE; }"
         )
         dhl.addWidget(reply)
+
+        # attachments area
+        self._attachments_box = QWidget()
+        self._attachments_box.setVisible(False)
+        self._attachments_box.setStyleSheet(
+            "QWidget#attachments_box { background: #F3F4F6; border-radius: 8px; padding: 6px 12px; }"
+        )
+        self._attachments_box.setObjectName("attachments_box")
+        self._attachments_layout = QVBoxLayout(self._attachments_box)
+        self._attachments_layout.setContentsMargins(0, 0, 0, 0)
+        self._attachments_layout.setSpacing(4)
+        dhl.addWidget(self._attachments_box)
 
         dl.addWidget(dh)
 
@@ -501,6 +517,7 @@ class MainWindow(QMainWindow):
         self._body_worker.start()
 
     def _show_loading_skeleton(self):
+        self._attachments_box.setVisible(False)
         self.detail_body.setHtml(
             "<html><body style='margin:0;background:#F9FAFB;display:flex;"
             "align-items:center;justify-content:center;height:100vh;"
@@ -512,7 +529,8 @@ class MainWindow(QMainWindow):
             "</div></body></html>"
         )
 
-    def _on_body_fetched(self, html_b: str, text_b: str):
+    def _on_body_fetched(self, html_b: str, text_b: str, attachments: list | None = None):
+        self._show_attachments(attachments or [])
         if html_b:
             wrapped = (
                 "<html><head><meta charset='utf-8'><style>"
@@ -550,7 +568,37 @@ class MainWindow(QMainWindow):
                 "</body></html>"
             )
 
+    def _show_attachments(self, attachments: list[dict]):
+        # clear previous
+        while self._attachments_layout.count():
+            child = self._attachments_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        if not attachments:
+            self._attachments_box.setVisible(False)
+            return
+        self._attachments_box.setVisible(True)
+        for att in attachments:
+            lbl = QLabel(f"📎 {att['filename']}  ({att['size'] / 1024:.0f} KB)")
+            lbl.setStyleSheet(
+                "font-size: 12px; color: #4D6BFE; font-weight: 600; "
+                "padding: 4px 8px;"
+            )
+            lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+            lbl.mousePressEvent = lambda e, a=att: self._save_attachment(a)
+            self._attachments_layout.addWidget(lbl)
+
+    def _save_attachment(self, att: dict):
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Attachment", att["filename"]
+        )
+        if path:
+            with open(path, "wb") as f:
+                f.write(att["data"])
+
     def _on_body_error(self, err: str):
+        self._attachments_box.setVisible(False)
         self.detail_body.setHtml(
             "<html><body style='margin:0;background:#F9FAFB;display:flex;"
             "align-items:center;justify-content:center;height:100vh;"
