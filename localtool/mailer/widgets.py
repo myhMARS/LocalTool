@@ -88,7 +88,7 @@ class EmailItemWidget(QWidget):
         )
         self.date_lbl.setTextFormat(Qt.TextFormat.PlainText)
         self.date_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.date_lbl.setFixedWidth(75)
+        self.date_lbl.setFixedWidth(100)
         top_row.addWidget(self.date_lbl)
         text_col.addLayout(top_row)
 
@@ -123,7 +123,7 @@ class EmailItemWidget(QWidget):
             del self._cached_sh
         super().resizeEvent(event)
         w = self.width()
-        text_w = w - 26 - 12 - 8 - 12 - 46 - 12 - 75 - 8
+        text_w = w - 26 - 12 - 8 - 12 - 46 - 12 - 100 - 8
         if text_w < 60:
             text_w = 60
         fm = self.sender.fontMetrics()

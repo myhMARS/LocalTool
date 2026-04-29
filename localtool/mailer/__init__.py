@@ -8,6 +8,16 @@ from localtool.mailer.config import CONFIG_FILE, unlock_config
 from localtool.mailer.style import STYLE
 
 
+def _normalize_config(cfg: dict) -> dict:
+    """Wrap legacy single-account config into multi-account format."""
+    if "accounts" in cfg:
+        return cfg
+    account = dict(cfg)
+    if "name" not in account:
+        account["name"] = account.get("email", "Account").split("@")[0]
+    return {"accounts": [account], "active": 0}
+
+
 def _make_icon():
     from PyQt6.QtCore import Qt, QRectF
     from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QPixmap, QIcon, QFont
@@ -53,11 +63,23 @@ class EmailTool(BaseTool):
     help = "email client (GUI)"
 
     def run(self, args: list[str] | None = None) -> int:
+        from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
         from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
+        from PyQt6.QtGui import QFont
         from localtool.mailer.dialogs import LoginDialog, SettingsDialog
         from localtool.mailer.window import MainWindow
 
+        def _msg_handler(msg_type, context, msg):
+            if "setPointSize" in msg:
+                return
+            # pass through to default handler
+            import sys
+            sys.__stderr__.write(f"{msg}\n")
+
+        qInstallMessageHandler(_msg_handler)
+
         app = QApplication(sys.argv)
+        app.setFont(QFont("Segoe UI", 10))
         app.setWindowIcon(_make_icon())
         app.setStyleSheet(STYLE)
 
@@ -83,6 +105,7 @@ class EmailTool(BaseTool):
                 else:
                     cfg = dlg.cfg
 
+        cfg = _normalize_config(cfg)
         window = MainWindow(cfg)
         window.show()
         return app.exec()

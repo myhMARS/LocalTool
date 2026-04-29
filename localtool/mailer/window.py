@@ -7,7 +7,7 @@ from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QPushButton, QSizePolicy, QSplitter,
+    QMainWindow, QMenu, QMessageBox, QPushButton, QSizePolicy, QSplitter,
     QStackedWidget, QStatusBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -22,9 +22,10 @@ from localtool.mailer.workers import (
 class MainWindow(QMainWindow):
     def __init__(self, cfg: dict):
         super().__init__()
-        self.cfg = cfg
-        self.emails: list[dict] = []
-        self._sent_emails: list[dict] = []
+        self.cfg = cfg  # {"accounts": [...], "active": 0}
+        self._active_idx = cfg.get("active", 0)
+        self._email_cache: dict[str, list[dict]] = {}
+        self._sent_cache: dict[str, list[dict]] = {}
         self._current_folder = FOLDER_INBOX
         self._unread_only = False
         self._fetch_worker: FetchListWorker | None = None
@@ -70,33 +71,59 @@ class MainWindow(QMainWindow):
         brand.setObjectName("toolbar_title")
         layout.addWidget(brand)
 
-        addr = self.cfg.get("email", "")
-        if addr:
-            badge = QLabel(addr)
-            badge.setObjectName("toolbar_subtitle")
-            badge.setStyleSheet(
-                "font-size: 11px; color: #9CA3AF; font-weight: 500; "
-                "background: #F3F4F6; border-radius: 6px; padding: 2px 10px;"
+        accounts = self.cfg.get("accounts", [])
+        if len(accounts) > 1:
+            self.account_switcher = QPushButton()
+            self.account_switcher.setFixedHeight(34)
+            self.account_switcher.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.account_switcher.setStyleSheet(
+                "QPushButton {"
+                "  background: #F7F8FA;"
+                "  border: 1px solid #E8EAED;"
+                "  border-radius: 17px;"
+                "  padding: 5px 14px 5px 16px;"
+                "  font-size: 12.5px;"
+                "  color: #1F2937;"
+                "  font-weight: 600;"
+                "  text-align: left;"
+                "}"
+                "QPushButton:hover { background: #F0F1F4; border-color: #D1D5DB; }"
+                "QPushButton:pressed { background: #E8EAEE; }"
             )
-            layout.addWidget(badge)
+            self._update_account_btn_text()
+            self.account_switcher.clicked.connect(self._show_account_menu)
+            layout.addWidget(self.account_switcher)
+        else:
+            addr = self._active_cfg.get("email", "")
+            if addr:
+                badge = QLabel(addr)
+                badge.setObjectName("toolbar_subtitle")
+                badge.setStyleSheet(
+                    "font-size: 11px; color: #9CA3AF; font-weight: 500; "
+                    "background: #F3F4F6; border-radius: 6px; padding: 2px 10px;"
+                )
+                layout.addWidget(badge)
 
         layout.addStretch()
 
         compose_btn = QPushButton("Compose")
         compose_btn.setObjectName("primary_btn")
         compose_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        compose_btn.setFixedHeight(34)
         compose_btn.clicked.connect(self._on_compose)
         layout.addWidget(compose_btn)
 
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setObjectName("tool_btn")
         refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh_btn.setFixedHeight(34)
         refresh_btn.clicked.connect(self._refresh_list)
         layout.addWidget(refresh_btn)
 
         settings_btn = QPushButton("Settings")
         settings_btn.setObjectName("tool_btn")
         settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        settings_btn.setFixedHeight(34)
         settings_btn.clicked.connect(self._on_settings)
         layout.addWidget(settings_btn)
 
@@ -445,30 +472,40 @@ class MainWindow(QMainWindow):
             self.group_btn.setObjectName("")
             self._list_stack.setCurrentIndex(0)
         self.detail_stack.setCurrentIndex(0)
-        cached = self._sent_emails if folder == FOLDER_SENT else self.emails
+        cached = self._active_emails()
         if cached:
             self._apply_filter()
         else:
             self._refresh_list()
 
+    @property
+    def _active_cfg(self) -> dict:
+        return self.cfg["accounts"][self._active_idx]
+
+    @property
+    def _cache_key(self) -> str:
+        return self._active_cfg.get("email", "")
+
     def _active_emails(self) -> list[dict]:
-        return self._sent_emails if self._current_folder == FOLDER_SENT else self.emails
+        cache = self._sent_cache if self._current_folder == FOLDER_SENT else self._email_cache
+        key = self._cache_key
+        if key not in cache:
+            cache[key] = []
+        return cache[key]
 
     def _refresh_list(self):
         folder = FOLDER_SENT if self._current_folder == FOLDER_SENT else FOLDER_INBOX
         self.status_bar.showMessage(f"Refreshing {folder.lower()}...")
         self._count_stack.setCurrentIndex(0)
         self._spinner.start()
-        self._fetch_worker = FetchListWorker(self.cfg, folder)
+        self._fetch_worker = FetchListWorker(self._active_cfg, folder)
         self._fetch_worker.finished.connect(self._on_list_fetched)
         self._fetch_worker.error.connect(self._on_list_error)
         self._fetch_worker.start()
 
     def _on_list_fetched(self, emails: list[dict], status: str):
-        if self._current_folder == FOLDER_SENT:
-            self._sent_emails = emails
-        else:
-            self.emails = emails
+        cache = self._sent_cache if self._current_folder == FOLDER_SENT else self._email_cache
+        cache[self._cache_key] = emails
         self._spinner.stop()
         self._count_stack.setCurrentIndex(1)
         self._apply_filter()
@@ -498,6 +535,8 @@ class MainWindow(QMainWindow):
         self.group_btn.style().polish(self.group_btn)
         self._apply_filter()
 
+    STREAM_BATCH = 60
+
     def _apply_filter(self):
         src = self._active_emails()
         visible = [e for e in src if not self._unread_only or e.get("unread", False)]
@@ -516,15 +555,46 @@ class MainWindow(QMainWindow):
             self.list_count.setText(f"{total}")
 
         if self._grouped:
-            self._apply_grouped(visible)
+            # pre-group: build flat list of (group_key, emails) tuples
+            from collections import OrderedDict
+            groups: dict[str, list[dict]] = OrderedDict()
+            for em in visible:
+                key = em.get("display", "unknown")
+                groups.setdefault(key, []).append(em)
+            self._stream_queue = []
+            for key in sorted(groups, key=str.casefold):
+                emails = sorted(groups[key], key=lambda e: (not e.get("unread", False), -e.get("ts", 0)))
+                unread = sum(1 for e in emails if e.get("unread"))
+                self._stream_queue.append((key, len(emails), unread, emails))
         else:
-            self._apply_flat(visible)
-        QTimer.singleShot(0, self._fix_item_widths)
+            visible.sort(key=lambda e: e.get("ts", 0), reverse=True)
+            self._stream_queue = list(visible)
 
-    def _apply_flat(self, visible: list[dict]):
-        self.email_list.clear()
-        self._list_stack.setCurrentIndex(0)
-        for em in visible:
+        self._stream_offset = 0
+        self._stream_tick()
+
+    def _stream_tick(self):
+        batch = self._stream_queue[self._stream_offset:
+                                   self._stream_offset + self.STREAM_BATCH]
+
+        if self._grouped:
+            self._stream_grouped_tick(batch)
+        else:
+            self._stream_flat_tick(batch)
+
+        self._stream_offset += self.STREAM_BATCH
+        if self._stream_offset < len(self._stream_queue):
+            QTimer.singleShot(5, self._stream_tick)
+        else:
+            self._stream_queue = []
+            QTimer.singleShot(0, self._fix_item_widths)
+
+    def _stream_flat_tick(self, batch):
+        if self._stream_offset == 0:
+            self.email_list.setUpdatesEnabled(False)
+            self.email_list.clear()
+            self._list_stack.setCurrentIndex(0)
+        for em in batch:
             item = QListWidgetItem()
             widget = EmailItemWidget(em)
             widget.set_unread(em.get("unread", False))
@@ -532,24 +602,19 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, em["id"])
             self.email_list.addItem(item)
             self.email_list.setItemWidget(item, widget)
+        if self._stream_offset + self.STREAM_BATCH >= len(self._stream_queue):
+            self.email_list.setUpdatesEnabled(True)
 
-    def _apply_grouped(self, visible: list[dict]):
-        self.email_tree.clear()
-        self._list_stack.setCurrentIndex(1)
-        # group by display name
-        from collections import OrderedDict
-        groups: dict[str, list[dict]] = OrderedDict()
-        for em in visible:
-            key = em.get("display", "unknown")
-            groups.setdefault(key, []).append(em)
-        # sort groups by key, unread emails first within each group
-        for key in sorted(groups, key=str.casefold):
-            emails = sorted(groups[key], key=lambda e: (not e.get("unread", False), e.get("date", "")))
-            unread = sum(1 for e in emails if e.get("unread"))
+    def _stream_grouped_tick(self, batch):
+        if self._stream_offset == 0:
+            self.email_tree.setUpdatesEnabled(False)
+            self.email_tree.clear()
+            self._list_stack.setCurrentIndex(1)
+        for key, total, unread, emails in batch:
             parent = QTreeWidgetItem()
-            parent.setData(0, Qt.ItemDataRole.UserRole, None)  # sentinel: not an email
+            parent.setData(0, Qt.ItemDataRole.UserRole, None)
             parent.setFlags(parent.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-            folder_w = SenderFolderWidget(key, len(emails), unread)
+            folder_w = SenderFolderWidget(key, total, unread)
             self.email_tree.addTopLevelItem(parent)
             self.email_tree.setItemWidget(parent, 0, folder_w)
             parent.setSizeHint(0, folder_w.sizeHint())
@@ -562,6 +627,8 @@ class MainWindow(QMainWindow):
                 child.setSizeHint(0, email_w.sizeHint())
                 self.email_tree.setItemWidget(child, 0, email_w)
             parent.setExpanded(True)
+        if self._stream_offset + self.STREAM_BATCH >= len(self._stream_queue):
+            self.email_tree.setUpdatesEnabled(True)
 
     def _fix_item_widths(self):
         if self._grouped:
@@ -641,13 +708,13 @@ class MainWindow(QMainWindow):
 
         if is_sent:
             self.detail_from.setText(f"to {em.get('to', '')}" if em.get('to') else "")
-            self.detail_to.setText(f"from {self.cfg.get('email', 'me')}")
+            self.detail_to.setText(f"from {self._active_cfg.get('email', 'me')}")
             display_name = em.get("display", em.get("to", ""))
             self.avatar_widget._name = display_name
             self.avatar_widget._bg = QColor(avatar_color(display_name))
         else:
             self.detail_from.setText(em["from"])
-            self.detail_to.setText(f"to {self.cfg.get('email', 'me')}")
+            self.detail_to.setText(f"to {self._active_cfg.get('email', 'me')}")
             self.avatar_widget._name = em["from"]
             self.avatar_widget._bg = QColor(avatar_color(em["from"]))
         self.avatar_widget.update()
@@ -657,7 +724,7 @@ class MainWindow(QMainWindow):
         self._selected_msg_id = em["id"]
 
         folder = FOLDER_SENT if is_sent else FOLDER_INBOX
-        self._body_worker = FetchBodyWorker(self.cfg, em["id"], folder)
+        self._body_worker = FetchBodyWorker(self._active_cfg, em["id"], folder)
         self._body_worker.finished.connect(self._on_body_fetched)
         self._body_worker.error.connect(self._on_body_error)
         self._body_worker.start()
@@ -693,7 +760,7 @@ class MainWindow(QMainWindow):
                 "a { color: #4D6BFE; }"
                 "blockquote { border-left: 3px solid #E5E7EB; margin-left: 0; padding-left: 16px; "
                 "color: #6B7280; }"
-                "img { max-width: 100% !important; height: auto !important; }"
+                "img { max-width: 100% !important; height: auto; }"
                 "table { max-width: 100% !important; }"
                 "pre, code { background: #F3F4F6; border-radius: 6px; padding: 2px 6px; "
                 "font-family: 'Cascadia Code', 'JetBrains Mono', monospace; font-size: 13px; }"
@@ -843,7 +910,7 @@ class MainWindow(QMainWindow):
         dlg.send_btn.setEnabled(False)
         dlg.send_btn.setText("Sending...")
         self._send_worker = SendWorker(
-            self.cfg, to_addr, dlg.subject_input.text(), dlg.body_input.toPlainText()
+            self._active_cfg, to_addr, dlg.subject_input.text(), dlg.body_input.toPlainText()
         )
         self._send_worker.finished.connect(lambda: self._on_sent(dlg))
         self._send_worker.error.connect(lambda e: self._on_send_error(e, dlg))
@@ -863,8 +930,83 @@ class MainWindow(QMainWindow):
     # Settings
     # ==================================================================
 
+    def _update_account_btn_text(self):
+        a = self.cfg["accounts"][self._active_idx]
+        label = a.get("name", "") or a.get("email", "Unknown")
+        self.account_switcher.setText(f"  {label}  ▾")
+
+    def _show_account_menu(self):
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu {"
+            "  background: #FFFFFF;"
+            "  border: 1px solid #E8EAED;"
+            "  border-radius: 10px;"
+            "  padding: 6px;"
+            "}"
+            "QMenu::item {"
+            "  padding: 8px 32px 8px 16px;"
+            "  border-radius: 6px;"
+            "  font-size: 12.5px;"
+            "  color: #1F2937;"
+            "}"
+            "QMenu::item:selected {"
+            "  background: #F0F1F4;"
+            "  color: #111827;"
+            "}"
+        )
+        accounts = self.cfg.get("accounts", [])
+        for i, a in enumerate(accounts):
+            label = a.get("name", "") or a.get("email", "Unknown")
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(i == self._active_idx)
+            action.setData(i)
+        action = menu.exec(self.account_switcher.mapToGlobal(
+            self.account_switcher.rect().bottomLeft()))
+        if action and action.data() is not None:
+            self._on_account_switch(action.data())
+
+    def _on_account_switch(self, idx: int):
+        if idx < 0 or idx == self._active_idx:
+            return
+        self._active_idx = idx
+        self.cfg["active"] = idx
+        self._update_account_btn_text()
+        self._current_folder = FOLDER_INBOX
+        self._unread_only = False
+        self._search_text = ""
+        self.search_input.clear()
+        self.filter_btn.setText("All")
+        self.inbox_tab.setObjectName("folder_active")
+        self.sent_tab.setObjectName("")
+        self._filter_pill.setVisible(True)
+        self.group_btn.setVisible(True)
+        self.detail_stack.setCurrentIndex(0)
+        if self._grouped:
+            self._grouped = False
+            self.group_btn.setObjectName("")
+            self._list_stack.setCurrentIndex(0)
+        self.email_list.clear()
+        self.email_tree.clear()
+        cached = self._active_emails()
+        if cached:
+            self._apply_filter()
+        else:
+            self._refresh_list()
+
     def _on_settings(self):
         dlg = SettingsDialog(self.cfg, self)
         if dlg.exec() == SettingsDialog.DialogCode.Accepted and dlg.cfg:
+            old_accounts = self.cfg.get("accounts", [])
             self.cfg = dlg.cfg
+            new_accounts = self.cfg.get("accounts", [])
+            if len(new_accounts) != len(old_accounts) or \
+               any(a.get("email") != b.get("email") for a, b in zip(new_accounts, old_accounts)):
+                self._email_cache.clear()
+                self._sent_cache.clear()
+            self._active_idx = min(self._active_idx, len(new_accounts) - 1)
+            self.cfg["active"] = self._active_idx
+            if hasattr(self, 'account_switcher'):
+                self._update_account_btn_text()
             self._refresh_list()

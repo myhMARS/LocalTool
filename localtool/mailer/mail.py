@@ -11,12 +11,40 @@ def connect_imap(cfg: dict):
     return conn
 
 
-def decode_rfc2047(value: str) -> str:
+def _safe_charset(charset: str | None) -> str:
+    """Normalize a charset to a Python-compatible codec name."""
+    if not charset:
+        return "utf-8"
+    cs = charset.lower().replace("-", "")
+    # map common non-standard names
+    aliases = {
+        "unknown8bit": "utf-8",
+        "unknown": "utf-8",
+        "xunknown": "utf-8",
+        "default": "utf-8",
+        "ansi_x3.1101983": "utf-8",
+    }
+    if cs in aliases:
+        return aliases[cs]
+    # validate: try looking up the codec
+    import codecs
+    try:
+        codecs.lookup(charset)
+        return charset
+    except LookupError:
+        try:
+            codecs.lookup(cs)
+            return cs
+        except LookupError:
+            return "utf-8"
+
+
+def decode_rfc2047(value) -> str:
     parts = decode_header(value)
     result = []
     for text, charset in parts:
         if isinstance(text, bytes):
-            result.append(text.decode(charset or "utf-8", errors="replace"))
+            result.append(text.decode(_safe_charset(charset), errors="replace"))
         else:
             result.append(str(text))
     return "".join(result)
@@ -26,11 +54,22 @@ def load_email_body(msg: Message) -> tuple[str, str, list[dict], dict[str, dict]
     html_body, text_body = "", ""
     attachments: list[dict] = []
     inline_images: dict[str, dict] = {}
+
+    def _safe_payload(part):
+        try:
+            return part.get_payload(decode=True)
+        except Exception:
+            # handle non-standard charsets (e.g. unknown-8bit)
+            raw = part.get_payload(decode=False)
+            if isinstance(raw, str):
+                return raw.encode("utf-8", errors="replace")
+            return raw
+
     if msg.is_multipart():
         for part in msg.walk():
             ct = part.get_content_type()
             disp = part.get_content_disposition()
-            payload = part.get_payload(decode=True)
+            payload = _safe_payload(part)
             cid = part.get("Content-ID", "").strip().strip("<>")
             if payload and cid:
                 inline_images[cid] = {"content_type": ct, "data": payload}
@@ -48,7 +87,7 @@ def load_email_body(msg: Message) -> tuple[str, str, list[dict], dict[str, dict]
                 elif ct == "text/plain" and not text_body:
                     text_body = payload.decode(errors="replace")
     else:
-        raw_payload = msg.get_payload(decode=True)
+        raw_payload = _safe_payload(msg)
         if raw_payload:
             ct = msg.get_content_type()
             body = raw_payload.decode(errors="replace")
@@ -59,7 +98,8 @@ def load_email_body(msg: Message) -> tuple[str, str, list[dict], dict[str, dict]
     return html_body, text_body, attachments, inline_images
 
 
-def format_date(date_str: str) -> str:
+def format_date(date_value) -> str:
+    date_str = str(date_value) if date_value else ""
     try:
         dt = parsedate_to_datetime(date_str)
         now = datetime.now(dt.tzinfo)
