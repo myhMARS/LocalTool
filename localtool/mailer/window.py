@@ -1,19 +1,19 @@
 import base64
 import re
 
-from PyQt6.QtCore import QSize, Qt, QUrl
+from PyQt6.QtCore import QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QColor
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QSizePolicy, QSplitter,
-    QStackedWidget, QStatusBar, QVBoxLayout, QWidget,
+    QStackedWidget, QStatusBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from localtool.mailer.dialogs import ComposeDialog, SettingsDialog
 from localtool.mailer.style import avatar_color, STYLE
-from localtool.mailer.widgets import AvatarWidget, EmailItemWidget, SpinnerWidget
+from localtool.mailer.widgets import AvatarWidget, EmailItemWidget, SenderFolderWidget, SpinnerWidget
 from localtool.mailer.workers import (
     FOLDER_INBOX, FOLDER_SENT, FetchBodyWorker, FetchListWorker, SendWorker,
 )
@@ -31,6 +31,10 @@ class MainWindow(QMainWindow):
         self._body_worker: FetchBodyWorker | None = None
         self._send_worker: SendWorker | None = None
         self._selected_msg_id: str | None = None
+        self._grouped = False
+        self._fix_timer = QTimer(self)
+        self._fix_timer.setSingleShot(True)
+        self._fix_timer.timeout.connect(self._fix_item_widths)
 
         self.setWindowTitle("Email")
         self.setMinimumSize(960, 580)
@@ -157,6 +161,20 @@ class MainWindow(QMainWindow):
         ft_layout.addWidget(self.sent_tab)
 
         row1.addWidget(folder_tabs)
+
+        self.group_btn = QPushButton("Group")
+        self.group_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.group_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: 1px solid #E5E7EB; "
+            "border-radius: 8px; padding: 4px 12px; color: #6B7280; font-size: 11px; "
+            "font-weight: 600; }"
+            "QPushButton:hover { border-color: #4D6BFE; color: #4D6BFE; }"
+            "QPushButton#group_active { background: #EEF2FF; border-color: #4D6BFE; "
+            "color: #4D6BFE; }"
+        )
+        self.group_btn.clicked.connect(self._toggle_grouped)
+        row1.addWidget(self.group_btn)
+
         row1.addStretch()
 
         # filter + count grouped pill
@@ -228,6 +246,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(header)
 
+        # ── flat list view ──
         self.email_list = QListWidget()
         self.email_list.setFrameShape(QFrame.Shape.NoFrame)
         self.email_list.setSpacing(0)
@@ -237,14 +256,37 @@ class MainWindow(QMainWindow):
         self.email_list.setCursor(Qt.CursorShape.PointingHandCursor)
         self.email_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.email_list.installEventFilter(self)
-        layout.addWidget(self.email_list)
+
+        # ── grouped tree view ──
+        self.email_tree = QTreeWidget()
+        self.email_tree.setFrameShape(QFrame.Shape.NoFrame)
+        self.email_tree.setHeaderHidden(True)
+        self.email_tree.setIndentation(22)
+        self.email_tree.setIconSize(QSize(40, 40))
+        self.email_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.email_tree.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.email_tree.setVerticalScrollMode(QTreeWidget.ScrollMode.ScrollPerPixel)
+        self.email_tree.setAnimated(False)
+        self.email_tree.setStyleSheet(
+            "QTreeWidget { border: none; outline: none; }"
+            "QTreeWidget::item { border: none; }"
+            "QTreeWidget::item:selected { background: transparent; }"
+        )
+        self.email_tree.itemClicked.connect(self._on_tree_clicked)
+        self.email_tree.installEventFilter(self)
+
+        self._list_stack = QStackedWidget()
+        self._list_stack.addWidget(self.email_list)
+        self._list_stack.addWidget(self.email_tree)
+        layout.addWidget(self._list_stack)
 
         return panel
 
     def eventFilter(self, obj, event):
         from PyQt6.QtCore import QEvent
-        if obj is self.email_list and event.type() == QEvent.Type.Resize:
-            self._fix_item_widths()
+        if event.type() == QEvent.Type.Resize:
+            if obj is self.email_list or obj is self.email_tree:
+                self._fix_timer.start(80)
         return super().eventFilter(obj, event)
 
     def _build_detail_panel(self) -> QStackedWidget:
@@ -395,8 +437,13 @@ class MainWindow(QMainWindow):
         self.sent_tab.setObjectName("folder_active" if folder == FOLDER_SENT else "")
         self.sent_tab.style().unpolish(self.sent_tab)
         self.sent_tab.style().polish(self.sent_tab)
-        # hide filter pill for Sent (no unread concept)
+        # hide filter pill and group btn for Sent
         self._filter_pill.setVisible(folder == FOLDER_INBOX)
+        self.group_btn.setVisible(folder == FOLDER_INBOX)
+        if folder == FOLDER_SENT and self._grouped:
+            self._grouped = False
+            self.group_btn.setObjectName("")
+            self._list_stack.setCurrentIndex(0)
         self.detail_stack.setCurrentIndex(0)
         cached = self._sent_emails if folder == FOLDER_SENT else self.emails
         if cached:
@@ -439,8 +486,19 @@ class MainWindow(QMainWindow):
         self.filter_btn.setText("Unread" if self._unread_only else "All")
         self._apply_filter()
 
+    def _toggle_grouped(self):
+        if self._current_folder == FOLDER_SENT:
+            return
+        self._grouped = not self._grouped
+        if self._grouped:
+            self.group_btn.setObjectName("group_active")
+        else:
+            self.group_btn.setObjectName("")
+        self.group_btn.style().unpolish(self.group_btn)
+        self.group_btn.style().polish(self.group_btn)
+        self._apply_filter()
+
     def _apply_filter(self):
-        self.email_list.clear()
         src = self._active_emails()
         visible = [e for e in src if not self._unread_only or e.get("unread", False)]
         if self._search_text:
@@ -449,6 +507,23 @@ class MainWindow(QMainWindow):
                 if self._search_text in e.get("display", "").lower()
                 or self._search_text in e.get("subject", "").lower()
             ]
+
+        total = len(src)
+        shown = len(visible)
+        if self._unread_only:
+            self.list_count.setText(f"{shown}/{total}")
+        else:
+            self.list_count.setText(f"{total}")
+
+        if self._grouped:
+            self._apply_grouped(visible)
+        else:
+            self._apply_flat(visible)
+        QTimer.singleShot(0, self._fix_item_widths)
+
+    def _apply_flat(self, visible: list[dict]):
+        self.email_list.clear()
+        self._list_stack.setCurrentIndex(0)
         for em in visible:
             item = QListWidgetItem()
             widget = EmailItemWidget(em)
@@ -457,27 +532,72 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, em["id"])
             self.email_list.addItem(item)
             self.email_list.setItemWidget(item, widget)
-        total = len(self._active_emails())
-        shown = len(visible)
-        if self._unread_only:
-            self.list_count.setText(f"{shown}/{total}")
-        else:
-            self.list_count.setText(f"{total}")
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, self._fix_item_widths)
+
+    def _apply_grouped(self, visible: list[dict]):
+        self.email_tree.clear()
+        self._list_stack.setCurrentIndex(1)
+        # group by display name
+        from collections import OrderedDict
+        groups: dict[str, list[dict]] = OrderedDict()
+        for em in visible:
+            key = em.get("display", "unknown")
+            groups.setdefault(key, []).append(em)
+        # sort groups by key, unread emails first within each group
+        for key in sorted(groups, key=str.casefold):
+            emails = sorted(groups[key], key=lambda e: (not e.get("unread", False), e.get("date", "")))
+            unread = sum(1 for e in emails if e.get("unread"))
+            parent = QTreeWidgetItem()
+            parent.setData(0, Qt.ItemDataRole.UserRole, None)  # sentinel: not an email
+            parent.setFlags(parent.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            folder_w = SenderFolderWidget(key, len(emails), unread)
+            self.email_tree.addTopLevelItem(parent)
+            self.email_tree.setItemWidget(parent, 0, folder_w)
+            parent.setSizeHint(0, folder_w.sizeHint())
+            for em in emails:
+                child = QTreeWidgetItem(parent)
+                child.setData(0, Qt.ItemDataRole.UserRole, em["id"])
+                child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                email_w = EmailItemWidget(em)
+                email_w.set_unread(em.get("unread", False))
+                child.setSizeHint(0, email_w.sizeHint())
+                self.email_tree.setItemWidget(child, 0, email_w)
+            parent.setExpanded(True)
 
     def _fix_item_widths(self):
-        vw = self.email_list.viewport().width()
-        if vw <= 80:
-            return
-        for i in range(self.email_list.count()):
-            item = self.email_list.item(i)
-            w = self.email_list.itemWidget(item)
-            if w:
-                sh = w.sizeHint()
-                sh.setWidth(vw)
-                item.setSizeHint(sh)
-        self.email_list.scheduleDelayedItemsLayout()
+        if self._grouped:
+            tree = self.email_tree
+            vw = tree.viewport().width()
+            if vw <= 80:
+                return
+            for ti in range(tree.topLevelItemCount()):
+                parent = tree.topLevelItem(ti)
+                pw = tree.itemWidget(parent, 0)
+                if pw:
+                    sh = pw.sizeHint()
+                    sh.setWidth(vw)
+                    parent.setSizeHint(0, sh)
+                if not parent.isExpanded():
+                    continue
+                for ci in range(parent.childCount()):
+                    child = parent.child(ci)
+                    cw = tree.itemWidget(child, 0)
+                    if cw:
+                        sh = cw.sizeHint()
+                        sh.setWidth(vw)
+                        child.setSizeHint(0, sh)
+            tree.scheduleDelayedItemsLayout()
+        else:
+            vw = self.email_list.viewport().width()
+            if vw <= 80:
+                return
+            for i in range(self.email_list.count()):
+                item = self.email_list.item(i)
+                w = self.email_list.itemWidget(item)
+                if w:
+                    sh = w.sizeHint()
+                    sh.setWidth(vw)
+                    item.setSizeHint(sh)
+            self.email_list.scheduleDelayedItemsLayout()
 
     def _on_list_error(self, err: str):
         self._spinner.stop()
@@ -490,13 +610,27 @@ class MainWindow(QMainWindow):
     # Select email
     # ==================================================================
 
+    def _on_tree_clicked(self, item: QTreeWidgetItem, col: int):
+        if item.childCount() > 0:
+            item.setExpanded(not item.isExpanded())
+            return
+        self._on_select_item(item)
+
     def _on_select_email(self, row: int):
         if row < 0:
             return
         item = self.email_list.item(row)
+        self._on_select_item(item)
+
+    def _on_select_item(self, item):
         if item is None:
             return
-        msg_id = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(item, QTreeWidgetItem):
+            msg_id = item.data(0, Qt.ItemDataRole.UserRole)
+        else:
+            msg_id = item.data(Qt.ItemDataRole.UserRole)
+        if msg_id is None:
+            return  # sender folder header, not an email
         em = next((e for e in self._active_emails() if e["id"] == msg_id), None)
         if em is None:
             return
@@ -594,16 +728,37 @@ class MainWindow(QMainWindow):
             return
         src = self._active_emails()
         em = next((e for e in src if e["id"] == self._selected_msg_id), None)
-        if em and em.get("unread"):
-            em["unread"] = False
-            for i in range(self.email_list.count()):
-                item = self.email_list.item(i)
-                if item and item.data(Qt.ItemDataRole.UserRole) == self._selected_msg_id:
-                    w = self.email_list.itemWidget(item)
-                    if w:
-                        w.set_unread(False)
-                    break
-            self._update_count_label()
+        if not em or not em.get("unread"):
+            return
+        em["unread"] = False
+        if self._grouped:
+            self._mark_read_in_tree(src)
+        else:
+            self._mark_read_in_list()
+        self._update_count_label()
+
+    def _mark_read_in_list(self):
+        for i in range(self.email_list.count()):
+            item = self.email_list.item(i)
+            if item and item.data(Qt.ItemDataRole.UserRole) == self._selected_msg_id:
+                w = self.email_list.itemWidget(item)
+                if w:
+                    w.set_unread(False)
+                break
+
+    def _mark_read_in_tree(self, src):
+        for ti in range(self.email_tree.topLevelItemCount()):
+            parent = self.email_tree.topLevelItem(ti)
+            for ci in range(parent.childCount()):
+                child = parent.child(ci)
+                if child.data(0, Qt.ItemDataRole.UserRole) == self._selected_msg_id:
+                    cw = self.email_tree.itemWidget(child, 0)
+                    if cw:
+                        cw.set_unread(False)
+                    pw = self.email_tree.itemWidget(parent, 0)
+                    if pw:
+                        pw.update_unread(-1)
+                    return
 
     def _update_count_label(self):
         total = len(self._active_emails())

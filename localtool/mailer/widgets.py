@@ -1,7 +1,7 @@
 from PyQt6.QtCore import QSize, Qt, QRectF, QTimer
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
-    QHBoxLayout, QLabel, QListWidget, QVBoxLayout, QWidget, QFrame,
+    QHBoxLayout, QLabel, QListWidget, QTreeWidget, QVBoxLayout, QWidget, QFrame,
 )
 
 from localtool.mailer.style import avatar_color, avatar_initials
@@ -105,17 +105,22 @@ class EmailItemWidget(QWidget):
         root.addLayout(text_col, 1)
 
     def sizeHint(self):
+        if hasattr(self, '_cached_sh'):
+            return self._cached_sh
         sh = super().sizeHint()
         p = self.parent()
-        while p and not isinstance(p, QListWidget):
+        while p and not isinstance(p, (QListWidget, QTreeWidget)):
             p = p.parent()
         if p:
             vw = p.viewport().width()
             if vw > 80 and sh.width() > vw:
                 sh = QSize(vw, sh.height())
+        self._cached_sh = sh
         return sh
 
     def resizeEvent(self, event):
+        if hasattr(self, '_cached_sh'):
+            del self._cached_sh
         super().resizeEvent(event)
         w = self.width()
         text_w = w - 26 - 12 - 8 - 12 - 46 - 12 - 75 - 8
@@ -164,3 +169,44 @@ class SpinnerWidget(QWidget):
         p.setPen(pen)
         r = QRectF(2.5, 2.5, self.width() - 5, self.height() - 5)
         p.drawArc(r, self._angle * 16, 270 * 16)
+
+
+class SenderFolderWidget(QWidget):
+    """Sender folder header for grouped tree view."""
+
+    def __init__(self, sender_name: str, total: int, unread: int, parent=None):
+        super().__init__(parent)
+        self._sender = sender_name
+        self._total = total
+        self._unread = unread
+
+        self.setObjectName("sender_folder")
+        self.setStyleSheet(
+            "QWidget#sender_folder { background: #F3F4F6; border-bottom: 1px solid #E5E7EB; }"
+        )
+
+        root = QHBoxLayout(self)
+        root.setContentsMargins(10, 8, 16, 8)
+        root.setSpacing(10)
+
+        name = QLabel(sender_name)
+        name.setStyleSheet("font-size: 12.5px; font-weight: 700; color: #111827;")
+        name.setTextFormat(Qt.TextFormat.PlainText)
+        root.addWidget(name, 1)
+
+        self._badge = QLabel(str(unread) if unread > 0 else "")
+        self._badge.setStyleSheet(
+            "font-size: 10px; font-weight: 700; color: #FFFFFF; "
+            "background: #4D6BFE; border-radius: 8px; padding: 1px 7px;"
+        )
+        self._badge.setVisible(unread > 0)
+        root.addWidget(self._badge)
+
+        total_lbl = QLabel(str(total))
+        total_lbl.setStyleSheet("font-size: 11px; color: #9CA3AF; font-weight: 500;")
+        root.addWidget(total_lbl)
+
+    def update_unread(self, delta: int):
+        self._unread = max(0, self._unread + delta)
+        self._badge.setText(str(self._unread) if self._unread > 0 else "")
+        self._badge.setVisible(self._unread > 0)
