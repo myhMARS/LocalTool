@@ -244,4 +244,5 @@ class ExifTool(BaseTool):
         }.get(v, f"Unknown ({v})")
 
 
+
 run = ExifTool.entry_point

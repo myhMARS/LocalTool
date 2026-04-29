@@ -1,26 +1,10 @@
-import importlib
-import pkgutil
 import sys
 
-import localtool
-import localtool.tools
 from localtool.core import BaseTool
 
 
-def _import_tools():
-    for _, modname, _ in pkgutil.iter_modules(localtool.__path__):
-        if modname in ("tools",):
-            continue
-        if modname in ("main", "core"):
-            continue
-        importlib.import_module(f"localtool.{modname}")
-
-    for _, modname, _ in pkgutil.iter_modules(localtool.tools.__path__):
-        importlib.import_module(f"localtool.tools.{modname}")
-
-
 def main() -> int:
-    _import_tools()
+    BaseTool.discover()
 
     if len(sys.argv) < 2:
         print("usage: localtool <command> [args...]", file=sys.stderr)

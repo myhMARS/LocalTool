@@ -69,4 +69,5 @@ class ColorTool(BaseTool):
         print(f"RGB: ({r}, {g}, {b})")
 
 
+
 run = ColorTool.entry_point

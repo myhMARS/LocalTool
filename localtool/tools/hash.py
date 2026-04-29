@@ -66,4 +66,5 @@ class WinHashTool(BaseTool):
         return h.hexdigest()
 
 
+
 run = WinHashTool.entry_point
