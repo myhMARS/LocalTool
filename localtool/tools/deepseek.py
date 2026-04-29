@@ -13,33 +13,18 @@ class DeepSeekTool(BaseTool):
     BASE = "https://api.deepseek.com"
 
     def run(self, args: list[str] | None = None) -> int:
-        if not args:
-            args = []
+        parser = self.make_parser()
+        parser.add_argument("-k", "--key", default=os.environ.get("DEEPSEEK_API_KEY"),
+                            help="API key (default: $DEEPSEEK_API_KEY)")
+        ns = self.parse(parser, args)
+        if ns is None:
+            return 1
 
-        api_key = None
-
-        it = iter(args)
-        for arg in it:
-            if arg in ("-k", "--key"):
-                try:
-                    api_key = next(it)
-                except StopIteration:
-                    print("error: -k requires an API key", file=sys.stderr)
-                    return 1
-            elif arg in ("-h", "--help"):
-                self._usage()
-                return 0
-            elif arg.startswith("-"):
-                print(f"error: unknown flag '{arg}'", file=sys.stderr)
-                return 1
-
-        if api_key is None:
-            api_key = os.environ.get("DEEPSEEK_API_KEY")
-        if not api_key:
+        if not ns.key:
             print("error: no API key provided (use -k or set DEEPSEEK_API_KEY)", file=sys.stderr)
             return 1
 
-        balance = self._fetch_balance(api_key)
+        balance = self._fetch_balance(ns.key)
         if balance is None:
             return 1
 
@@ -76,14 +61,6 @@ class DeepSeekTool(BaseTool):
             print(f"  Total Balance:  {total:.2f}")
             print(f"    └─ Topped up: {topped_up:.2f}")
             print(f"    └─ Granted:   {granted:.2f}")
-
-    @staticmethod
-    def _usage():
-        print("usage: deepseek [-k <key>]", file=sys.stderr)
-        print("  -k, --key   API key (default: $DEEPSEEK_API_KEY)", file=sys.stderr)
-        print(file=sys.stderr)
-        print("  export DEEPSEEK_API_KEY=sk-xxx", file=sys.stderr)
-        print("  deepseek", file=sys.stderr)
 
 
 run = DeepSeekTool.entry_point

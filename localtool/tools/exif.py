@@ -14,31 +14,20 @@ class ExifTool(BaseTool):
     help = "extract metadata from image files"
 
     def run(self, args: list[str] | None = None) -> int:
-        if not args:
-            self._usage()
-            return 1
-
-        basic_only = False
-        files: list[str] = []
-        for arg in args:
-            if arg in ("-b", "--basic"):
-                basic_only = True
-            elif arg.startswith("-"):
-                print(f"error: unknown flag '{arg}'", file=sys.stderr)
-                return 1
-            else:
-                files.append(arg)
-
-        if not files:
-            print("error: no image file specified", file=sys.stderr)
+        parser = self.make_parser()
+        parser.add_argument("-b", "--basic", action="store_true",
+                            help="show basic info only (no EXIF)")
+        parser.add_argument("files", nargs="+", help="image files to inspect")
+        ns = self.parse(parser, args)
+        if ns is None:
             return 1
 
         exit_code = 0
-        for i, path in enumerate(files):
+        for i, path in enumerate(ns.files):
             if i > 0:
                 print()
             try:
-                self._process(path, basic_only)
+                self._process(path, ns.basic)
             except FileNotFoundError:
                 print(f"error: file not found: {path}", file=sys.stderr)
                 exit_code = 1
@@ -47,10 +36,6 @@ class ExifTool(BaseTool):
                 exit_code = 1
 
         return exit_code
-
-    def _usage(self):
-        print("usage: exif [-b|--basic] <image...>", file=sys.stderr)
-        print("  -b, --basic   show basic info only (no EXIF)", file=sys.stderr)
 
     def _process(self, path: str, basic_only: bool):
         img = Image.open(path)

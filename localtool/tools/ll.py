@@ -11,10 +11,13 @@ class LlTool(BaseTool):
     help = "list files with details (like ls -lah)"
 
     def run(self, args: list[str] | None = None) -> int:
-        if args is None:
-            args = sys.argv[1:]
+        parser = self.make_parser()
+        parser.add_argument("path", nargs="?", default=".")
+        ns = self.parse(parser, args)
+        if ns is None:
+            return 1
 
-        path = args[0] if args else "."
+        path = ns.path
         if not os.path.exists(path):
             print(f"error: {path}: no such file or directory", file=sys.stderr)
             return 1

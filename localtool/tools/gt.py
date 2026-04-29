@@ -4,9 +4,9 @@ import sys
 
 from localtool.core import BaseTool
 
-_DIR = "\033[34m"      # blue
-_LINE = "\033[90m"      # dim gray
-_ROOT = "\033[1;36m"    # bold cyan
+_DIR = "\033[34m"
+_LINE = "\033[90m"
+_ROOT = "\033[1;36m"
 _RESET = "\033[0m"
 
 
@@ -15,6 +15,10 @@ class GtTool(BaseTool):
     help = "show directory tree of git-tracked files"
 
     def run(self, args: list[str] | None = None) -> int:
+        parser = self.make_parser()
+        if self.parse(parser, args) is None:
+            return 1
+
         try:
             result = subprocess.run(
                 ["git", "ls-files"],

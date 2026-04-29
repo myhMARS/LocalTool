@@ -9,62 +9,32 @@ class WinHashTool(BaseTool):
     help = "compute file hashes (default: md5)"
 
     def run(self, args: list[str] | None = None) -> int:
-        if args is None:
-            args = sys.argv[1:]
-
-        algorithm = "md5"
-        files: list[str] = []
-        texts: list[str] = []
-        output_file: str | None = None
-
-        it = iter(args)
-        for arg in it:
-            if arg in ("-a", "--algorithm"):
-                try:
-                    algorithm = next(it)
-                except StopIteration:
-                    print("error: --algorithm requires a value", file=sys.stderr)
-                    return 1
-            elif arg.startswith("--algorithm="):    
-                algorithm = arg.split("=", 1)[1]
-            elif arg in ("-f", "--file"):
-                try:
-                    files.append(next(it))
-                except StopIteration:
-                    print("error: -f requires a file path", file=sys.stderr)
-                    return 1
-            elif arg in ("-r", "--raw"):
-                try:
-                    texts.append(next(it))
-                except StopIteration:
-                    print("error: -r requires text input", file=sys.stderr)
-                    return 1
-            elif arg in ("-o", "--output"):
-                try:
-                    output_file = next(it)
-                except StopIteration:
-                    print("error: -o requires a file path", file=sys.stderr)
-                    return 1
-            elif arg in ("-h", "--help"):
-                print("usage: hash [-a ALGORITHM] -f <file> [...] [-r <text>] [-o <output>]")
-                return 0
-            else:
-                print(f"error: unknown argument '{arg}'", file=sys.stderr)
-                return 1
+        parser = self.make_parser()
+        parser.add_argument("-a", "--algorithm", default="md5",
+                            help="hash algorithm (default: md5)")
+        parser.add_argument("-f", "--file", action="append", default=[],
+                            help="file to hash (repeatable)")
+        parser.add_argument("-r", "--raw", action="append", default=[],
+                            help="raw text to hash (repeatable)")
+        parser.add_argument("-o", "--output",
+                            help="write result to file")
+        ns = self.parse(parser, args)
+        if ns is None:
+            return 1
 
         try:
-            hashlib.new(algorithm)
+            hashlib.new(ns.algorithm)
         except ValueError:
-            print(f"error: unsupported algorithm '{algorithm}'", file=sys.stderr)
+            print(f"error: unsupported algorithm '{ns.algorithm}'", file=sys.stderr)
             return 1
 
         results: list[str] = []
 
-        for filepath in files:
+        for filepath in ns.file:
             try:
                 with open(filepath, "rb") as f:
-                    digest = self._compute_hash(f.read(), algorithm)
-                results.append(f"{algorithm}: {digest}  {filepath}")
+                    digest = self._compute_hash(f.read(), ns.algorithm)
+                results.append(f"{ns.algorithm}: {digest}  {filepath}")
             except FileNotFoundError:
                 print(f"error: file not found: {filepath}", file=sys.stderr)
                 return 1
@@ -72,17 +42,17 @@ class WinHashTool(BaseTool):
                 print(f"error: {filepath}: {e}", file=sys.stderr)
                 return 1
 
-        for t in texts:
-            digest = self._compute_hash(t.encode("utf-8"), algorithm)
-            results.append(f"{algorithm}: {digest}")
+        for t in ns.raw:
+            digest = self._compute_hash(t.encode("utf-8"), ns.algorithm)
+            results.append(f"{ns.algorithm}: {digest}")
 
         if not results:
             print("error: at least one file (-f) or text (-r) is required", file=sys.stderr)
             return 1
 
         output = "\n".join(results)
-        if output_file:
-            with open(output_file, "w") as f:
+        if ns.output:
+            with open(ns.output, "w") as f:
                 f.write(output + "\n")
         else:
             print(output)

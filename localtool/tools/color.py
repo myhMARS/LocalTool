@@ -9,14 +9,13 @@ class ColorTool(BaseTool):
     help = "display a color block from RGB or hex (#xxxxxx) input"
 
     def run(self, args: list[str] | None = None) -> int:
-        if not args:
-            print("usage: color <hex|rgb>", file=sys.stderr)
-            print("  e.g. color #ff0000", file=sys.stderr)
-            print("  e.g. color rgb(255,0,0)", file=sys.stderr)
-            print("  e.g. color 255,0,0", file=sys.stderr)
+        parser = self.make_parser()
+        parser.add_argument("color", nargs="+", help="hex (#ff0000) or RGB (255,0,0)")
+        ns = self.parse(parser, args)
+        if ns is None:
             return 1
 
-        input_str = " ".join(args)
+        input_str = " ".join(ns.color)
         r, g, b = self._parse(input_str)
         if r is None:
             print(f"error: cannot parse color '{input_str}'", file=sys.stderr)

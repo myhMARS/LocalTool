@@ -11,6 +11,10 @@ class IpTool(BaseTool):
     help = "show public and local IP with geolocation"
 
     def run(self, args: list[str] | None = None) -> int:
+        parser = self.make_parser()
+        if self.parse(parser, args) is None:
+            return 1
+
         try:
             req = urllib.request.Request("http://ip-api.com/json/?lang=zh-CN")
             with urllib.request.urlopen(req, timeout=5) as resp:

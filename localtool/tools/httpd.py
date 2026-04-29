@@ -43,28 +43,14 @@ class HttpdTool(BaseTool):
     help = "HTTP server that logs all incoming requests"
 
     def run(self, args: list[str] | None = None) -> int:
-        if args is None:
-            args = sys.argv[1:]
+        parser = self.make_parser()
+        parser.add_argument("-p", "--port", type=int, default=8080)
+        ns = self.parse(parser, args)
+        if ns is None:
+            return 1
 
-        port = 8080
-
-        it = iter(args)
-        for arg in it:
-            if arg in ("-p", "--port"):
-                try:
-                    port = int(next(it))
-                except StopIteration:
-                    print("error: -p requires a port number", file=sys.stderr)
-                    return 1
-            elif arg in ("-h", "--help"):
-                print("usage: httpd [-p PORT]")
-                return 0
-            else:
-                print(f"error: unknown argument '{arg}'", file=sys.stderr)
-                return 1
-
-        server = HTTPServer(("0.0.0.0", port), LogHandler)
-        print(f"listening on http://0.0.0.0:{port}")
+        server = HTTPServer(("0.0.0.0", ns.port), LogHandler)
+        print(f"listening on http://0.0.0.0:{ns.port}")
         try:
             server.serve_forever()
         except KeyboardInterrupt:

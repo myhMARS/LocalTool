@@ -1,3 +1,4 @@
+import argparse
 import sys
 from abc import ABC
 
@@ -30,3 +31,17 @@ class BaseTool(ABC):
     @staticmethod
     def list_all() -> dict[str, str]:
         return {name: cls.help for name, cls in sorted(BaseTool._registry.items())}
+
+    def make_parser(self) -> argparse.ArgumentParser:
+        return argparse.ArgumentParser(
+            prog=self.name,
+            description=self.help,
+            exit_on_error=False,
+        )
+
+    @staticmethod
+    def parse(parser: argparse.ArgumentParser, args: list[str] | None) -> argparse.Namespace | None:
+        try:
+            return parser.parse_args(args)
+        except (argparse.ArgumentError, SystemExit):
+            return None
