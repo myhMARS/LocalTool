@@ -1,124 +1,171 @@
+<p align="center">
+  <img src="https://img.shields.io/badge/python-%3E%3D3.12%2C%3C3.14-blue" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macOS-lightgrey" alt="Platform">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+</p>
+
 # LocalTool
 
-Personal CLI toolkit — a collection of small utilities bundled into a single installable package.
+A personal CLI toolkit — small, composable utilities bundled into a single installable Python package.
 
-个人 CLI 工具箱 — 将多个小工具打包为单个可安装的 Python 软件包。
+## Features
 
-## Installation / 安装
+- **Zero-config** — install and run, no setup needed
+- **Auto-discovery** — tools register themselves; the dispatcher picks them up automatically
+- **Minimal dependencies** — most tools use only the standard library
+- **Extensible** — add a tool by dropping a single file into `localtool/`
+
+## Quick Start
 
 ```bash
+# Install
 uv tool install .
+
+# List available tools
+localtool
+
+# Try a few
+hash -f README.md
+ip
+ll
 ```
 
-Or from source / 或从源码安装：
+Requires **Python >= 3.12**.
+
+## Tools
+
+| Command | Description |
+|---------|-------------|
+| `color` | Display a color block from RGB or hex input |
+| `email` | Desktop email client (GUI, PyQt6) |
+| `exif` | Extract metadata and GPS location from images |
+| `gt` | Show directory tree of git-tracked files |
+| `hash` | Compute file / text hashes (MD5, SHA-256, etc.) |
+| `httpd` | Minimal HTTP server that logs incoming requests |
+| `ip` | Show public and local IP with geolocation |
+| `ll` | List files with permissions, size, and timestamps |
+| `localtool` | Meta-dispatcher — `localtool <cmd>` runs any tool |
+
+---
+
+### `color`
+
+Print a terminal color swatch from hex or RGB input.
 
 ```bash
-git clone <repo-url> && cd LocalTool
-uv sync
+color '#ff6600'
+color 'rgb(255,0,0)'
+color '128,64,32'
 ```
 
-Requires Python >= 3.12.
+### `email`
 
-## Commands / 命令
+A PyQt6 desktop email client with IMAP/SMTP support.
 
-### `gt` — Git Tree / Git 目录树
+- Inbox, sent, and unread-filter tabs with cached switching
+- Compose dialog with monospace editor
+- Real-time search by sender, recipient, or subject
+- AES-encrypted local config with a master password
+
+```bash
+email
+```
+
+### `exif`
+
+Extract metadata from image files — dimensions, format, camera settings, and GPS coordinates.
+
+```bash
+exif photo.jpg
+exif -b image.png            # basic info only (no EXIF)
+exif *.jpg *.heic
+```
+
+When GPS data is present, the tool reverse-geocodes coordinates into a street address via OpenStreetMap.
+
+### `gt`
 
 Display a tree view of all tracked files in the current git repository.
-
-以树状图展示当前仓库中所有 Git 跟踪的文件。
 
 ```bash
 gt
 ```
 
-### `hash` — File / Text Hashing / 文件文本哈希
+### `hash`
 
 Compute cryptographic hashes for files or raw text.
 
-计算文件或文本的加密哈希值。
-
 ```bash
-hash -f README.md                  # MD5 of a file / 文件的 MD5
-hash -a sha256 -f README.md        # SHA-256
-hash -r "hello"                    # hash raw text / 原文哈希
-hash -f a.txt -f b.txt             # multiple inputs / 多个输入
+hash -f README.md                   # default: MD5
+hash -a sha256 -f README.md         # SHA-256
+hash -r "hello"                     # raw text
+hash -f a.txt -f b.txt              # multiple inputs
 ```
 
-| Flag / 参数 | Description / 说明 |
-|-------------|--------------------|
-| `-a`, `--algorithm` | Hash algorithm, default: `md5` / 哈希算法 |
-| `-f`, `--file` | File path (repeatable) / 文件路径（可重复） |
-| `-r`, `--raw` | Raw text to hash (repeatable) / 原文文本（可重复） |
-| `-o`, `--output` | Write result to file / 输出到文件 |
+| Flag | Description |
+|------|-------------|
+| `-a`, `--algorithm` | Hash algorithm (default: `md5`) |
+| `-f`, `--file` | File path (repeatable) |
+| `-r`, `--raw` | Raw text to hash (repeatable) |
+| `-o`, `--output` | Write result to file |
 
-### `httpd` — HTTP Request Logger / HTTP 请求日志
+### `httpd`
 
 Start a minimal HTTP server that logs every incoming request to stdout.
 
-启动一个最小化的 HTTP 服务器，将每个请求记录到标准输出。
-
 ```bash
-httpd              # listen on :8080 / 监听 8080 端口
-httpd -p 3000      # listen on :3000 / 监听 3000 端口
+httpd                               # listen on :8080
+httpd -p 3000                       # listen on :3000
 ```
 
-### `ip` — IP & Geolocation / IP 及归属地
+### `ip`
 
-Show local intranet IP and public IP with geolocation details (city, region, ISP).
-
-显示本地内网 IP 和公网 IP，以及归属地信息（城市、地区、运营商）。
+Show local and public IP addresses with geolocation (city, region, ISP).
 
 ```bash
 ip
 ```
 
-### `ll` — File Listing / 文件列表
+### `ll`
 
-List files with details — permissions, human-readable size, modification time — similar to `ls -lah`.
-
-列出文件的详细信息 — 权限、可读大小、修改时间 — 类似 `ls -lah`。
+List files with permissions, human-readable sizes, and modification times — similar to `ls -lah`.
 
 ```bash
 ll
 ll /some/directory
 ```
 
-### `email` — Email Client / 邮件客户端 (GUI)
+### `localtool`
 
-A PyQt6-based desktop email client.
-
-基于 PyQt6 的桌面邮件客户端。
-
-**Features / 功能：**
-
-- **Inbox & Sent / 收件箱与已发送** — folder tabs with cached switching / 文件夹标签切换，使用缓存加速
-- **Unread filter / 未读筛选** — toggle to show only unread messages / 一键只看未读邮件
-- **Search / 搜索** — real-time filtering by sender, recipient, or subject / 实时按发件人、收件人、主题筛选
-- **Compose & Send / 撰写与发送** — polished compose dialog with monospace editor / 精致的撰写弹窗
-- **Master password / 主密码** — AES-encrypted configuration on disk / AES 加密存储配置
-- **Loading states / 加载动画** — spinner animations during fetch / 数据加载时的旋转动画
+The meta-dispatcher. Run without arguments to list all registered tools, or with a command name to delegate.
 
 ```bash
-email
+localtool                           # list all tools
+localtool ip                        # same as running `ip` directly
 ```
 
-Configuration is encrypted with a master password and stored locally. Supports standard IMAP/SMTP providers.
+## Architecture
 
-配置文件使用主密码加密存储在本地，支持标准的 IMAP/SMTP 邮件服务商。
+Tools extend `BaseTool` (defined in `localtool/core.py`) and register automatically via `__init_subclass__`. The dispatcher in `localtool/main.py` uses `pkgutil.iter_modules` to import every module under `localtool/` at startup — no manual registration needed.
 
-### `localtool` — Dispatcher / 调度器
+To add a new tool:
 
-Run as a meta-command to discover available tools:
+1. Create `localtool/mytool.py`
+2. Subclass `BaseTool`, set `name` and `help`
+3. Implement `run(self, args: list[str] | None = None) -> int`
+4. Expose `run = MyTool.entry_point` at module level
+5. Add an entry point in `pyproject.toml`
 
-作为元命令运行，发现和管理所有可用工具：
+The tool is auto-discovered by the dispatcher on the next run.
+
+## Development
 
 ```bash
-localtool           # list all commands / 列出所有命令
-localtool ip        # same as `ip` directly / 等价于直接运行 `ip`
+git clone <repo-url> && cd LocalTool
+uv sync
+python -m localtool.main            # runs the dispatcher
 ```
 
-## Architecture / 架构
+## License
 
-Tools extend `BaseTool` (in `localtool/core.py`) and register automatically via `__init_subclass__`. The dispatcher (`localtool/main.py`) auto-discovers modules in the `localtool/` package at startup.
-
-工具继承 `BaseTool`（位于 `localtool/core.py`），通过 `__init_subclass__` 自动注册。调度器（`localtool/main.py`）在启动时自动发现 `localtool/` 包下的所有模块。
+MIT
