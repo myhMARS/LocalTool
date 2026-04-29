@@ -1,10 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from email.parser import BytesParser, BytesHeaderParser
 from email.utils import parsedate_to_datetime
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from localtool.mailer.mail import connect_imap, decode_rfc2047, format_date, load_email_body
+from localtool.mailer.mail import connect_imap, decode_rfc2047, load_email_body
 
 FOLDER_INBOX = "Inbox"
 FOLDER_SENT = "Sent"
@@ -32,6 +33,26 @@ def _parse_unseen(flags_data) -> bool:
     return "\\Seen" not in raw
 
 
+def _parse_date(date_value) -> tuple[str, float]:
+    """Parse a Date header once and return (display_str, timestamp)."""
+    date_str = str(date_value) if date_value else ""
+    try:
+        dt = parsedate_to_datetime(date_str)
+        now = datetime.now(dt.tzinfo)
+        diff = now - dt
+        if diff.days == 0:
+            display = dt.strftime("%H:%M")
+        elif diff.days < 7:
+            display = dt.strftime("%a %H:%M")
+        elif diff.days < 365:
+            display = dt.strftime("%m-%d %H:%M")
+        else:
+            display = dt.strftime("%Y-%m-%d %H:%M")
+        return display, dt.timestamp()
+    except Exception:
+        return date_str[:16] if len(date_str) > 16 else date_str, 0.0
+
+
 def _parse_headers(body_part: bytes, flags_raw: bytes, is_sent: bool) -> dict | None:
     """Parse headers from a single message fetch response. Returns dict or None on failure."""
     try:
@@ -50,13 +71,7 @@ def _parse_headers(body_part: bytes, flags_raw: bytes, is_sent: bool) -> dict | 
                 name_part = _display.rsplit("<", 1)[0].strip().strip('"')
                 if name_part:
                     _display = name_part
-        _date_raw = _msg.get("Date", "")
-        _date = format_date(_date_raw)
-        _ts = 0.0
-        try:
-            _ts = parsedate_to_datetime(str(_date_raw)).timestamp()
-        except Exception:
-            pass
+        _date, _ts = _parse_date(_msg.get("Date", ""))
         mid_str = flags_raw.split()[0].decode()
         return {
             "id": mid_str,
@@ -113,7 +128,7 @@ class FetchListWorker(QThread):
     error = pyqtSignal(str)
 
     NUM_WORKERS = 4
-    MIN_IDS_FOR_PARALLEL = 200
+    MIN_IDS_FOR_PARALLEL = 800
 
     def __init__(self, cfg: dict, folder: str = FOLDER_INBOX):
         super().__init__()
@@ -149,8 +164,8 @@ class FetchListWorker(QThread):
             self.error.emit(str(e))
 
     def _fetch_parallel(self, reversed_ids: list, folder: str, is_sent: bool) -> list[dict]:
-        """Split IDs across NUM_WORKERS connections and fetch concurrently."""
-        chunk_size = max(100, len(reversed_ids) // self.NUM_WORKERS)
+        """Split IDs across NUM_WORKERS connections, fetch concurrently, sort by date desc."""
+        chunk_size = max(200, len(reversed_ids) // self.NUM_WORKERS)
         chunks = []
         for i in range(0, len(reversed_ids), chunk_size):
             chunks.append(reversed_ids[i:i + chunk_size])
@@ -163,6 +178,7 @@ class FetchListWorker(QThread):
             for future in as_completed(futures):
                 all_parsed.extend(future.result())
 
+        all_parsed.sort(key=lambda e: e.get("ts", 0), reverse=True)
         return all_parsed
 
 
