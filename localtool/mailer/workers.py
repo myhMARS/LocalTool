@@ -5,7 +5,8 @@ from email.utils import parsedate_to_datetime
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from localtool.mailer.mail import connect_imap, decode_rfc2047, load_email_body
+from localtool.mailer.config import AccountConfig
+from localtool.mailer.mail import decode_rfc2047, imap_session, load_email_body, smtp_session
 
 FOLDER_INBOX = "Inbox"
 FOLDER_SENT = "Sent"
@@ -87,31 +88,30 @@ def _parse_headers(body_part: bytes, flags_raw: bytes, is_sent: bool) -> dict | 
         return None
 
 
-def _fetch_chunk(cfg: dict, folder: str, id_chunk: list[bytes], is_sent: bool) -> list[dict]:
+def _fetch_chunk(cfg: AccountConfig, folder: str, id_chunk: list[bytes], is_sent: bool) -> list[dict]:
     """Fetch a chunk of message headers over a dedicated IMAP connection."""
-    conn = connect_imap(cfg)
-    conn.select(folder)
     parsed = []
-    for batch_start in range(0, len(id_chunk), 200):
-        batch_ids = id_chunk[batch_start:batch_start + 200]
-        id_range = b",".join(batch_ids)
-        _status, _msg_data = conn.fetch(
-            id_range, "(FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])"
-        )
-        if _status != "OK":
-            continue
-        for item in _msg_data:
-            if not isinstance(item, tuple):
+    with imap_session(cfg) as conn:
+        conn.select(folder)
+        for batch_start in range(0, len(id_chunk), 200):
+            batch_ids = id_chunk[batch_start:batch_start + 200]
+            id_range = b",".join(batch_ids)
+            _status, _msg_data = conn.fetch(
+                id_range, "(FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])"
+            )
+            if _status != "OK":
                 continue
-            try:
-                flags_raw = item[0]
-                body_part = item[1]
-            except (IndexError, TypeError):
-                continue
-            entry = _parse_headers(body_part, flags_raw, is_sent)
-            if entry is not None:
-                parsed.append(entry)
-    conn.logout()
+            for item in _msg_data:
+                if not isinstance(item, tuple):
+                    continue
+                try:
+                    flags_raw = item[0]
+                    body_part = item[1]
+                except (IndexError, TypeError):
+                    continue
+                entry = _parse_headers(body_part, flags_raw, is_sent)
+                if entry is not None:
+                    parsed.append(entry)
     return parsed
 
 
@@ -130,21 +130,19 @@ class FetchListWorker(QThread):
     NUM_WORKERS = 4
     MIN_IDS_FOR_PARALLEL = 800
 
-    def __init__(self, cfg: dict, folder: str = FOLDER_INBOX):
+    def __init__(self, cfg: AccountConfig, folder: str = FOLDER_INBOX):
         super().__init__()
         self.cfg = cfg
         self.folder = folder
 
     def run(self):
         try:
-            conn = connect_imap(self.cfg)
-            status, folder = _resolve_folder(conn, self.folder)
-            if status != "OK":
-                conn.logout()
-                self.error.emit(f'folder "{self.folder}" not found')
-                return
-            status, data = conn.search(None, "ALL")
-            conn.logout()
+            with imap_session(self.cfg) as conn:
+                status, folder = _resolve_folder(conn, self.folder)
+                if status != "OK":
+                    self.error.emit(f'folder "{self.folder}" not found')
+                    return
+                status, data = conn.search(None, "ALL")
             if status != "OK":
                 self.error.emit("search failed")
                 return
@@ -186,7 +184,7 @@ class FetchBodyWorker(QThread):
     finished = pyqtSignal(str, str, list, dict)
     error = pyqtSignal(str)
 
-    def __init__(self, cfg: dict, msg_id: str, folder: str = FOLDER_INBOX):
+    def __init__(self, cfg: AccountConfig, msg_id: str, folder: str = FOLDER_INBOX):
         super().__init__()
         self.cfg = cfg
         self.msg_id = msg_id
@@ -194,23 +192,19 @@ class FetchBodyWorker(QThread):
 
     def run(self):
         try:
-            conn = connect_imap(self.cfg)
-            status, _folder = _resolve_folder(conn, self.folder)
-            if status != "OK":
-                conn.logout()
-                self.error.emit(f'folder "{self.folder}" not found')
-                return
-            status, msg_data = conn.fetch(self.msg_id.encode(), "(RFC822)")
-            if status != "OK":
-                conn.logout()
-                self.error.emit("fetch failed")
-                return
-            raw = msg_data[0][1]
-            msg = BytesParser().parsebytes(raw)
-            # mark as seen on server (inbox only)
-            if self.folder == FOLDER_INBOX:
-                conn.store(self.msg_id.encode(), "+FLAGS", "\\Seen")
-            conn.logout()
+            with imap_session(self.cfg) as conn:
+                status, _folder = _resolve_folder(conn, self.folder)
+                if status != "OK":
+                    self.error.emit(f'folder "{self.folder}" not found')
+                    return
+                status, msg_data = conn.fetch(self.msg_id.encode(), "(RFC822)")
+                if status != "OK":
+                    self.error.emit("fetch failed")
+                    return
+                raw = msg_data[0][1]
+                msg = BytesParser().parsebytes(raw)
+                if self.folder == FOLDER_INBOX:
+                    conn.store(self.msg_id.encode(), "+FLAGS", "\\Seen")
             html_b, text_b, attachments, inline_images = load_email_body(msg)
             self.finished.emit(html_b, text_b, attachments, inline_images)
         except Exception as e:
@@ -221,7 +215,7 @@ class SendWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, cfg: dict, to_addr: str, subject: str, body: str):
+    def __init__(self, cfg: AccountConfig, to_addr: str, subject: str, body: str):
         super().__init__()
         self.cfg = cfg
         self.to_addr = to_addr
@@ -229,17 +223,14 @@ class SendWorker(QThread):
         self.body = body
 
     def run(self):
-        import smtplib
         from email.mime.text import MIMEText
 
         try:
             msg = MIMEText(self.body)
-            msg["From"] = self.cfg["email"]
+            msg["From"] = self.cfg.email
             msg["To"] = self.to_addr
             msg["Subject"] = self.subject
-            with smtplib.SMTP(self.cfg["smtp_host"], self.cfg.get("smtp_port", 587)) as smtp:
-                smtp.starttls()
-                smtp.login(self.cfg["email"], self.cfg["password"])
+            with smtp_session(self.cfg) as smtp:
                 smtp.send_message(msg)
             self.finished.emit()
         except Exception as e:

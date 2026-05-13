@@ -3,18 +3,8 @@ import sys
 
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--log-level=3"
 
-from localtool.mailer.config import CONFIG_FILE, unlock_config
+from localtool.mailer.config import CONFIG_FILE, AppConfig, unlock_config
 from localtool.mailer.style import STYLE
-
-
-def _normalize_config(cfg: dict) -> dict:
-    """Wrap legacy single-account config into multi-account format."""
-    if "accounts" in cfg:
-        return cfg
-    account = dict(cfg)
-    if "name" not in account:
-        account["name"] = account.get("email", "Account").split("@")[0]
-    return {"accounts": [account], "active": 0}
 
 
 def _make_icon():
@@ -57,11 +47,12 @@ def _make_icon():
     return QIcon(px)
 
 
-def launch(cfg: dict | None = None) -> int:
+def launch(cfg: AppConfig | None = None) -> int:
     """Bootstrap the Qt application, handle login/setup, and run the event loop."""
     from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
     from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
     from PyQt6.QtGui import QFont
+    from localtool.mailer.controller import MailController
     from localtool.mailer.dialogs import LoginDialog, SettingsDialog
     from localtool.mailer.window import MainWindow
 
@@ -101,7 +92,8 @@ def launch(cfg: dict | None = None) -> int:
                 else:
                     cfg = dlg.cfg
 
-    cfg = _normalize_config(cfg)
-    window = MainWindow(cfg)
+    controller = MailController()
+    window = MainWindow(controller)
     window.show()
+    controller.load_config(cfg)
     return app.exec()

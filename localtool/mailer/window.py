@@ -2,8 +2,8 @@ import base64
 import re
 
 from PyQt6.QtCore import QSize, Qt, QTimer, QUrl
-from PyQt6.QtGui import QColor
-from PyQt6.QtWebEngineCore import QWebEngineSettings
+from PyQt6.QtGui import QColor, QDesktopServices
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -11,28 +11,34 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QStatusBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from localtool.mailer.controller import MailController
 from localtool.mailer.dialogs import ComposeDialog, SettingsDialog
 from localtool.mailer.style import avatar_color, STYLE
 from localtool.mailer.widgets import AvatarWidget, EmailItemWidget, SenderFolderWidget, SpinnerWidget
-from localtool.mailer.workers import (
-    FOLDER_INBOX, FOLDER_SENT, FetchBodyWorker, FetchListWorker, SendWorker,
-)
+from localtool.mailer.workers import FOLDER_INBOX, FOLDER_SENT
+
+
+class _MailWebPage(QWebEnginePage):
+    """Custom page that opens external links in the system browser."""
+    def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame):
+        if nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
+            QDesktopServices.openUrl(url)
+            return False
+        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, cfg: dict):
+    """Pure View: UI assembly and event binding. All business logic is in MailController."""
+
+    STREAM_BATCH = 60
+
+    def __init__(self, controller: MailController):
         super().__init__()
-        self.cfg = cfg  # {"accounts": [...], "active": 0}
-        self._active_idx = cfg.get("active", 0)
-        self._email_cache: dict[str, list[dict]] = {}
-        self._sent_cache: dict[str, list[dict]] = {}
-        self._current_folder = FOLDER_INBOX
-        self._unread_only = False
-        self._fetch_worker: FetchListWorker | None = None
-        self._body_worker: FetchBodyWorker | None = None
-        self._send_worker: SendWorker | None = None
-        self._selected_msg_id: str | None = None
-        self._grouped = False
+        self._ctrl = controller
+        self._compose_dlg: ComposeDialog | None = None
+
+        self._stream_queue: list = []
+        self._stream_offset = 0
         self._fix_timer = QTimer(self)
         self._fix_timer.setSingleShot(True)
         self._fix_timer.timeout.connect(self._fix_item_widths)
@@ -43,10 +49,10 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(STYLE)
 
         self._setup_ui()
-        self._refresh_list()
+        self._bind_controller()
 
     # ==================================================================
-    # UI setup
+    # UI construction
     # ==================================================================
 
     def _setup_ui(self):
@@ -63,20 +69,58 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self, root: QVBoxLayout):
         bar = QWidget()
         bar.setObjectName("toolbar")
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(24, 14, 24, 14)
-        layout.setSpacing(12)
+        self._toolbar_layout = QHBoxLayout(bar)
+        self._toolbar_layout.setContentsMargins(24, 14, 24, 14)
+        self._toolbar_layout.setSpacing(12)
 
         brand = QLabel("Email")
         brand.setObjectName("toolbar_title")
-        layout.addWidget(brand)
+        self._toolbar_layout.addWidget(brand)
 
-        accounts = self.cfg.get("accounts", [])
+        self._account_widget = None
+        self._build_account_area()
+
+        self._toolbar_layout.addStretch()
+
+        compose_btn = QPushButton("Compose")
+        compose_btn.setObjectName("primary_btn")
+        compose_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        compose_btn.setFixedHeight(34)
+        compose_btn.clicked.connect(self._on_compose)
+        self._toolbar_layout.addWidget(compose_btn)
+
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setObjectName("tool_btn")
+        refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh_btn.setFixedHeight(34)
+        refresh_btn.clicked.connect(self._ctrl.refresh)
+        self._toolbar_layout.addWidget(refresh_btn)
+
+        settings_btn = QPushButton("Settings")
+        settings_btn.setObjectName("tool_btn")
+        settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        settings_btn.setFixedHeight(34)
+        settings_btn.clicked.connect(self._on_settings)
+        self._toolbar_layout.addWidget(settings_btn)
+
+        root.addWidget(bar)
+
+    def _build_account_area(self):
+        """Create or recreate the account badge / switcher after brand label."""
+        if self._account_widget is not None:
+            self._toolbar_layout.removeWidget(self._account_widget)
+            self._account_widget.deleteLater()
+            self._account_widget = None
+
+        accounts = self._ctrl.cfg.accounts
+        if not accounts:
+            return
+
         if len(accounts) > 1:
-            self.account_switcher = QPushButton()
-            self.account_switcher.setFixedHeight(34)
-            self.account_switcher.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.account_switcher.setStyleSheet(
+            btn = QPushButton()
+            btn.setFixedHeight(34)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(
                 "QPushButton {"
                 "  background: #F7F8FA;"
                 "  border: 1px solid #E8EAED;"
@@ -90,11 +134,12 @@ class MainWindow(QMainWindow):
                 "QPushButton:hover { background: #F0F1F4; border-color: #D1D5DB; }"
                 "QPushButton:pressed { background: #E8EAEE; }"
             )
+            self.account_switcher = btn
             self._update_account_btn_text()
-            self.account_switcher.clicked.connect(self._show_account_menu)
-            layout.addWidget(self.account_switcher)
+            btn.clicked.connect(self._show_account_menu)
+            self._account_widget = btn
         else:
-            addr = self._active_cfg.get("email", "")
+            addr = accounts[self._ctrl.active_idx].email
             if addr:
                 badge = QLabel(addr)
                 badge.setObjectName("toolbar_subtitle")
@@ -102,32 +147,10 @@ class MainWindow(QMainWindow):
                     "font-size: 11px; color: #9CA3AF; font-weight: 500; "
                     "background: #F3F4F6; border-radius: 6px; padding: 2px 10px;"
                 )
-                layout.addWidget(badge)
+                self._account_widget = badge
 
-        layout.addStretch()
-
-        compose_btn = QPushButton("Compose")
-        compose_btn.setObjectName("primary_btn")
-        compose_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        compose_btn.setFixedHeight(34)
-        compose_btn.clicked.connect(self._on_compose)
-        layout.addWidget(compose_btn)
-
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.setObjectName("tool_btn")
-        refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        refresh_btn.setFixedHeight(34)
-        refresh_btn.clicked.connect(self._refresh_list)
-        layout.addWidget(refresh_btn)
-
-        settings_btn = QPushButton("Settings")
-        settings_btn.setObjectName("tool_btn")
-        settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        settings_btn.setFixedHeight(34)
-        settings_btn.clicked.connect(self._on_settings)
-        layout.addWidget(settings_btn)
-
-        root.addWidget(bar)
+        if self._account_widget is not None:
+            self._toolbar_layout.insertWidget(1, self._account_widget)
 
     def _build_body(self, root: QVBoxLayout):
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -179,12 +202,12 @@ class MainWindow(QMainWindow):
         self.inbox_tab = QPushButton("Inbox")
         self.inbox_tab.setObjectName("folder_active")
         self.inbox_tab.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.inbox_tab.clicked.connect(lambda: self._switch_folder(FOLDER_INBOX))
+        self.inbox_tab.clicked.connect(lambda: self._ctrl.switch_folder(FOLDER_INBOX))
         ft_layout.addWidget(self.inbox_tab)
 
         self.sent_tab = QPushButton("Sent")
         self.sent_tab.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.sent_tab.clicked.connect(lambda: self._switch_folder(FOLDER_SENT))
+        self.sent_tab.clicked.connect(lambda: self._ctrl.switch_folder(FOLDER_SENT))
         ft_layout.addWidget(self.sent_tab)
 
         row1.addWidget(folder_tabs)
@@ -199,12 +222,11 @@ class MainWindow(QMainWindow):
             "QPushButton#group_active { background: #EEF2FF; border-color: #4D6BFE; "
             "color: #4D6BFE; }"
         )
-        self.group_btn.clicked.connect(self._toggle_grouped)
+        self.group_btn.clicked.connect(self._ctrl.toggle_grouped)
         row1.addWidget(self.group_btn)
 
         row1.addStretch()
 
-        # filter + count grouped pill
         pill = QWidget()
         pill.setStyleSheet(
             "QWidget#filter_pill { background: #F3F4F6; border-radius: 12px; }"
@@ -223,7 +245,7 @@ class MainWindow(QMainWindow):
         self.filter_btn = QPushButton("All")
         self.filter_btn.setObjectName("filter_active")
         self.filter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.filter_btn.clicked.connect(self._toggle_filter)
+        self.filter_btn.clicked.connect(self._ctrl.toggle_filter)
         pill_layout.addWidget(self.filter_btn)
 
         sep = QWidget()
@@ -258,7 +280,6 @@ class MainWindow(QMainWindow):
         hv.addLayout(row1)
 
         # ── row 2: search bar ──
-        self._search_text = ""
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search...")
         self.search_input.setClearButtonEnabled(True)
@@ -268,7 +289,7 @@ class MainWindow(QMainWindow):
             "padding: 5px 10px; font-size: 12px; color: #111827; }"
             "QLineEdit:focus { border: 1.5px solid #4D6BFE; }"
         )
-        self.search_input.textChanged.connect(self._on_search_changed)
+        self.search_input.textChanged.connect(self._ctrl.set_search)
         hv.addWidget(self.search_input)
 
         layout.addWidget(header)
@@ -279,7 +300,7 @@ class MainWindow(QMainWindow):
         self.email_list.setSpacing(0)
         self.email_list.setIconSize(QSize(40, 40))
         self.email_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.email_list.currentRowChanged.connect(self._on_select_email)
+        self.email_list.currentRowChanged.connect(self._on_list_row_changed)
         self.email_list.setCursor(Qt.CursorShape.PointingHandCursor)
         self.email_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.email_list.installEventFilter(self)
@@ -420,6 +441,7 @@ class MainWindow(QMainWindow):
         dl.addWidget(dh)
 
         self.detail_body = QWebEngineView()
+        self.detail_body.setPage(_MailWebPage(self.detail_body))
         self.detail_body.setStyleSheet("background: #F9FAFB;")
         self.detail_body.settings().setAttribute(
             QWebEngineSettings.WebAttribute.AutoLoadImages, True
@@ -446,138 +468,206 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
 
     # ==================================================================
-    # Refresh
+    # Controller signal → UI updates
     # ==================================================================
 
-    def _switch_folder(self, folder: str):
-        if self._current_folder == folder:
-            return
-        self._current_folder = folder
-        self._unread_only = False
-        self._search_text = ""
-        self.search_input.clear()
-        self.filter_btn.setText("All")
-        # update tab styles
+    def _bind_controller(self):
+        ctrl = self._ctrl
+        ctrl.emails_updated.connect(self._on_emails_updated)
+        ctrl.loading_changed.connect(self._on_loading_changed)
+        ctrl.status_message.connect(self.status_bar.showMessage)
+        ctrl.detail_header_ready.connect(self._on_detail_header_ready)
+        ctrl.detail_loading.connect(self._show_loading_skeleton)
+        ctrl.detail_body_ready.connect(self._on_detail_body_ready)
+        ctrl.detail_error.connect(self._on_detail_error)
+        ctrl.counts_updated.connect(self._on_counts_updated)
+        ctrl.marked_read.connect(self._on_marked_read)
+        ctrl.send_finished.connect(self._on_send_finished)
+        ctrl.send_error.connect(self._on_send_error)
+        ctrl.config_loaded.connect(self._build_account_area)
+        ctrl.list_error.connect(self._on_list_error)
+        ctrl.folder_reset.connect(self._on_folder_reset)
+
+    def _on_emails_updated(self, data: list):
+        self._stream_queue = list(data)
+        self._stream_offset = 0
+        self._stream_tick()
+
+    def _on_loading_changed(self, loading: bool):
+        if loading:
+            self._count_stack.setCurrentIndex(0)
+            self._spinner.start()
+        else:
+            self._spinner.stop()
+            self._count_stack.setCurrentIndex(1)
+
+    def _on_detail_header_ready(self, em: dict, active_cfg, is_sent: bool):
+        self.detail_subject.setText(em["subject"])
+        self.detail_date.setText(em["date"])
+        if is_sent:
+            self.detail_from.setText(f"to {em.get('to', '')}" if em.get('to') else "")
+            self.detail_to.setText(f"from {active_cfg.email}")
+            display_name = em.get("display", em.get("to", ""))
+        else:
+            self.detail_from.setText(em["from"])
+            self.detail_to.setText(f"to {active_cfg.email}")
+            display_name = em["from"]
+        self.avatar_widget._name = display_name
+        self.avatar_widget._bg = QColor(avatar_color(display_name))
+        self.avatar_widget.update()
+        self.detail_stack.setCurrentIndex(1)
+
+    def _show_loading_skeleton(self):
+        self._attachments_box.setVisible(False)
+        self.detail_body.setHtml(
+            "<html><body style='margin:0;background:#F9FAFB;display:flex;"
+            "align-items:center;justify-content:center;height:100vh;"
+            "font-family:-apple-system,BlinkMacSystemFont,sans-serif;'>"
+            "<div style='text-align:center;'>"
+            "<div style='width:32px;height:32px;border:3px solid #E5E7EB;"
+            "border-top-color:#4D6BFE;border-radius:50%;margin:0 auto 16px;'></div>"
+            "<p style='color:#9CA3AF;font-size:13px;font-weight:500;'>Loading message...</p>"
+            "</div></body></html>"
+        )
+
+    def _on_detail_body_ready(self, html_b: str, text_b: str,
+                              attachments: list, inline_images: dict):
+        self._show_attachments(attachments)
+        if html_b:
+            if inline_images:
+                html_b = self._resolve_cid_images(html_b, inline_images)
+            wrapped = (
+                "<html><head><meta charset='utf-8'>"
+                "<meta http-equiv='Content-Security-Policy' "
+                "content=\"default-src https: http: 'unsafe-inline' 'unsafe-eval' data: blob:;\">"
+                "<style>"
+                "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; "
+                "line-height: 1.6; color: #111827; padding: 8px 0; "
+                "word-wrap: break-word; overflow-wrap: break-word; }"
+                "a { color: #4D6BFE; }"
+                "blockquote { border-left: 3px solid #E5E7EB; margin-left: 0; padding-left: 16px; "
+                "color: #6B7280; }"
+                "img { max-width: 100% !important; height: auto; }"
+                "table { max-width: 100% !important; }"
+                "pre, code { background: #F3F4F6; border-radius: 6px; padding: 2px 6px; "
+                "font-family: 'Cascadia Code', 'JetBrains Mono', monospace; font-size: 13px; }"
+                "pre { padding: 12px 16px; overflow-x: auto; }"
+                "</style></head><body>"
+                + html_b +
+                "</body></html>"
+            )
+            self.detail_body.setHtml(wrapped, QUrl("http://localhost"))
+        elif text_b:
+            text = text_b.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            text = text.replace("\n", "<br>")
+            self.detail_body.setHtml(
+                "<html><body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+                "font-size:14px;line-height:1.6;color:#111827;padding:24px 28px;"
+                "background:#F9FAFB;'>"
+                f"<pre style='font-family:\"Cascadia Code\",\"JetBrains Mono\",monospace;"
+                f"font-size:13px;white-space:pre-wrap;color:#111827;margin:0;'>{text}</pre>"
+                "</body></html>"
+            )
+        else:
+            self.detail_body.setHtml(
+                "<html><body style='margin:0;background:#F9FAFB;display:flex;"
+                "align-items:center;justify-content:center;height:100vh;"
+                "font-family:-apple-system,BlinkMacSystemFont,sans-serif;'>"
+                "<p style='color:#D1D5DB;font-size:14px;'>(Empty message)</p>"
+                "</body></html>"
+            )
+
+    def _on_list_error(self, err: str):
+        QMessageBox.critical(self, "Error", f"Failed to fetch emails:\n{err}")
+
+    def _on_detail_error(self, err: str):
+        self._attachments_box.setVisible(False)
+        self.detail_body.setHtml(
+            "<html><body style='margin:0;background:#F9FAFB;display:flex;"
+            "align-items:center;justify-content:center;height:100vh;"
+            "font-family:-apple-system,BlinkMacSystemFont,sans-serif;'>"
+            "<p style='color:#EF4444;font-size:14px;font-weight:600;'>"
+            "Failed to load message</p>"
+            "</body></html>"
+        )
+
+    def _on_counts_updated(self, total: int, unread: int, visible: int):
+        if self._ctrl.unread_only:
+            self.list_count.setText(f"{visible}/{total}")
+        else:
+            self.list_count.setText(f"{total}")
+        folder_label = "Sent" if self._ctrl.current_folder == FOLDER_SENT else "Inbox"
+        self.status_bar.showMessage(
+            f"{total} messages in {folder_label}  ({unread} unread)"
+        )
+
+    def _on_marked_read(self, msg_id: str):
+        """Update visual unread indicator in list or tree."""
+        if self._ctrl.is_grouped:
+            self._mark_read_in_tree(msg_id)
+        else:
+            self._mark_read_in_list(msg_id)
+
+    def _mark_read_in_list(self, msg_id: str):
+        for i in range(self.email_list.count()):
+            item = self.email_list.item(i)
+            if item and item.data(Qt.ItemDataRole.UserRole) == msg_id:
+                w = self.email_list.itemWidget(item)
+                if w:
+                    w.set_unread(False)
+                break
+
+    def _mark_read_in_tree(self, msg_id: str):
+        for ti in range(self.email_tree.topLevelItemCount()):
+            parent = self.email_tree.topLevelItem(ti)
+            for ci in range(parent.childCount()):
+                child = parent.child(ci)
+                if child.data(0, Qt.ItemDataRole.UserRole) == msg_id:
+                    cw = self.email_tree.itemWidget(child, 0)
+                    if cw:
+                        cw.set_unread(False)
+                    pw = self.email_tree.itemWidget(parent, 0)
+                    if pw:
+                        pw.update_unread(-1)
+                    return
+
+    def _on_send_finished(self):
+        if self._compose_dlg:
+            self._compose_dlg.accept()
+            self._compose_dlg = None
+
+    def _on_send_error(self, err: str):
+        if self._compose_dlg:
+            self._compose_dlg.send_btn.setEnabled(True)
+            self._compose_dlg.send_btn.setText("Send")
+        QMessageBox.critical(self, "Send Failed", f"Could not send message:\n\n{err}")
+
+    def _on_folder_reset(self, folder: str):
+        """Controller-triggered UI reset (e.g., account switch)."""
         self.inbox_tab.setObjectName("folder_active" if folder == FOLDER_INBOX else "")
         self.inbox_tab.style().unpolish(self.inbox_tab)
         self.inbox_tab.style().polish(self.inbox_tab)
         self.sent_tab.setObjectName("folder_active" if folder == FOLDER_SENT else "")
         self.sent_tab.style().unpolish(self.sent_tab)
         self.sent_tab.style().polish(self.sent_tab)
-        # hide filter pill and group btn for Sent
         self._filter_pill.setVisible(folder == FOLDER_INBOX)
         self.group_btn.setVisible(folder == FOLDER_INBOX)
-        if folder == FOLDER_SENT and self._grouped:
-            self._grouped = False
-            self.group_btn.setObjectName("")
-            self._list_stack.setCurrentIndex(0)
+        self.group_btn.setObjectName("")
+        self.search_input.clear()
+        self.filter_btn.setText("All")
         self.detail_stack.setCurrentIndex(0)
-        cached = self._active_emails()
-        if cached:
-            self._apply_filter()
-        else:
-            self._refresh_list()
+        self.email_list.clear()
+        self.email_tree.clear()
 
-    @property
-    def _active_cfg(self) -> dict:
-        return self.cfg["accounts"][self._active_idx]
-
-    @property
-    def _cache_key(self) -> str:
-        return self._active_cfg.get("email", "")
-
-    def _active_emails(self) -> list[dict]:
-        cache = self._sent_cache if self._current_folder == FOLDER_SENT else self._email_cache
-        key = self._cache_key
-        if key not in cache:
-            cache[key] = []
-        return cache[key]
-
-    def _refresh_list(self):
-        folder = FOLDER_SENT if self._current_folder == FOLDER_SENT else FOLDER_INBOX
-        self.status_bar.showMessage(f"Refreshing {folder.lower()}...")
-        self._count_stack.setCurrentIndex(0)
-        self._spinner.start()
-        self._fetch_worker = FetchListWorker(self._active_cfg, folder)
-        self._fetch_worker.finished.connect(self._on_list_fetched)
-        self._fetch_worker.error.connect(self._on_list_error)
-        self._fetch_worker.start()
-
-    def _on_list_fetched(self, emails: list[dict], status: str):
-        cache = self._sent_cache if self._current_folder == FOLDER_SENT else self._email_cache
-        cache[self._cache_key] = emails
-        self._spinner.stop()
-        self._count_stack.setCurrentIndex(1)
-        self._apply_filter()
-        self.email_list.setEnabled(True)
-        self.status_bar.showMessage(status)
-
-    def _on_search_changed(self, text: str):
-        self._search_text = text.strip().lower()
-        self._apply_filter()
-
-    def _toggle_filter(self):
-        if self._current_folder == FOLDER_SENT:
-            return
-        self._unread_only = not self._unread_only
-        self.filter_btn.setText("Unread" if self._unread_only else "All")
-        self._apply_filter()
-
-    def _toggle_grouped(self):
-        if self._current_folder == FOLDER_SENT:
-            return
-        self._grouped = not self._grouped
-        if self._grouped:
-            self.group_btn.setObjectName("group_active")
-        else:
-            self.group_btn.setObjectName("")
-        self.group_btn.style().unpolish(self.group_btn)
-        self.group_btn.style().polish(self.group_btn)
-        self._apply_filter()
-
-    STREAM_BATCH = 60
-
-    def _apply_filter(self):
-        src = self._active_emails()
-        visible = [e for e in src if not self._unread_only or e.get("unread", False)]
-        if self._search_text:
-            visible = [
-                e for e in visible
-                if self._search_text in e.get("display", "").lower()
-                or self._search_text in e.get("subject", "").lower()
-            ]
-
-        total = len(src)
-        shown = len(visible)
-        if self._unread_only:
-            self.list_count.setText(f"{shown}/{total}")
-        else:
-            self.list_count.setText(f"{total}")
-
-        if self._grouped:
-            # pre-group: build flat list of (group_key, emails) tuples
-            from collections import OrderedDict
-            groups: dict[str, list[dict]] = OrderedDict()
-            for em in visible:
-                key = em.get("display", "unknown")
-                groups.setdefault(key, []).append(em)
-            self._stream_queue = []
-            for key in sorted(groups, key=str.casefold):
-                emails = sorted(groups[key], key=lambda e: (not e.get("unread", False), -e.get("ts", 0)))
-                unread = sum(1 for e in emails if e.get("unread"))
-                self._stream_queue.append((key, len(emails), unread, emails))
-        else:
-            visible.sort(key=lambda e: e.get("ts", 0), reverse=True)
-            self._stream_queue = list(visible)
-
-        self._stream_offset = 0
-        self._stream_tick()
+    # ==================================================================
+    # Streaming render
+    # ==================================================================
 
     def _stream_tick(self):
         batch = self._stream_queue[self._stream_offset:
                                    self._stream_offset + self.STREAM_BATCH]
 
-        if self._grouped:
+        if self._ctrl.is_grouped:
             self._stream_grouped_tick(batch)
         else:
             self._stream_flat_tick(batch)
@@ -631,7 +721,7 @@ class MainWindow(QMainWindow):
             self.email_tree.setUpdatesEnabled(True)
 
     def _fix_item_widths(self):
-        if self._grouped:
+        if self._ctrl.is_grouped:
             tree = self.email_tree
             vw = tree.viewport().width()
             if vw <= 80:
@@ -666,195 +756,32 @@ class MainWindow(QMainWindow):
                     item.setSizeHint(sh)
             self.email_list.scheduleDelayedItemsLayout()
 
-    def _on_list_error(self, err: str):
-        self._spinner.stop()
-        self._count_stack.setCurrentIndex(1)
-        self.email_list.setEnabled(True)
-        self.status_bar.showMessage(f"Error: {err}")
-        QMessageBox.critical(self, "Error", f"Failed to fetch emails:\n{err}")
-
     # ==================================================================
-    # Select email
+    # Email selection (user → controller)
     # ==================================================================
 
     def _on_tree_clicked(self, item: QTreeWidgetItem, col: int):
         if item.childCount() > 0:
             item.setExpanded(not item.isExpanded())
             return
-        self._on_select_item(item)
+        msg_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if msg_id is not None:
+            self._ctrl.select_email(msg_id)
 
-    def _on_select_email(self, row: int):
+    def _on_list_row_changed(self, row: int):
         if row < 0:
             return
         item = self.email_list.item(row)
-        self._on_select_item(item)
-
-    def _on_select_item(self, item):
-        if item is None:
-            return
-        if isinstance(item, QTreeWidgetItem):
-            msg_id = item.data(0, Qt.ItemDataRole.UserRole)
-        else:
+        if item:
             msg_id = item.data(Qt.ItemDataRole.UserRole)
-        if msg_id is None:
-            return  # sender folder header, not an email
-        em = next((e for e in self._active_emails() if e["id"] == msg_id), None)
-        if em is None:
-            return
+            if msg_id is not None:
+                self._ctrl.select_email(msg_id)
 
-        is_sent = self._current_folder == FOLDER_SENT
-        self.detail_subject.setText(em["subject"])
-        self.detail_date.setText(em["date"])
-
-        if is_sent:
-            self.detail_from.setText(f"to {em.get('to', '')}" if em.get('to') else "")
-            self.detail_to.setText(f"from {self._active_cfg.get('email', 'me')}")
-            display_name = em.get("display", em.get("to", ""))
-            self.avatar_widget._name = display_name
-            self.avatar_widget._bg = QColor(avatar_color(display_name))
-        else:
-            self.detail_from.setText(em["from"])
-            self.detail_to.setText(f"to {self._active_cfg.get('email', 'me')}")
-            self.avatar_widget._name = em["from"]
-            self.avatar_widget._bg = QColor(avatar_color(em["from"]))
-        self.avatar_widget.update()
-
-        self._show_loading_skeleton()
-        self.detail_stack.setCurrentIndex(1)
-        self._selected_msg_id = em["id"]
-
-        folder = FOLDER_SENT if is_sent else FOLDER_INBOX
-        self._body_worker = FetchBodyWorker(self._active_cfg, em["id"], folder)
-        self._body_worker.finished.connect(self._on_body_fetched)
-        self._body_worker.error.connect(self._on_body_error)
-        self._body_worker.start()
-
-    def _show_loading_skeleton(self):
-        self._attachments_box.setVisible(False)
-        self.detail_body.setHtml(
-            "<html><body style='margin:0;background:#F9FAFB;display:flex;"
-            "align-items:center;justify-content:center;height:100vh;"
-            "font-family:-apple-system,BlinkMacSystemFont,sans-serif;'>"
-            "<div style='text-align:center;'>"
-            "<div style='width:32px;height:32px;border:3px solid #E5E7EB;"
-            "border-top-color:#4D6BFE;border-radius:50%;margin:0 auto 16px;'></div>"
-            "<p style='color:#9CA3AF;font-size:13px;font-weight:500;'>Loading message...</p>"
-            "</div></body></html>"
-        )
-
-    def _on_body_fetched(self, html_b: str, text_b: str, attachments: list | None = None,
-                         inline_images: dict | None = None):
-        self._show_attachments(attachments or [])
-        self._mark_as_read()
-        if html_b:
-            if inline_images:
-                html_b = self._resolve_cid_images(html_b, inline_images)
-            wrapped = (
-                "<html><head><meta charset='utf-8'>"
-                "<meta http-equiv='Content-Security-Policy' "
-                "content=\"default-src https: http: 'unsafe-inline' 'unsafe-eval' data: blob:;\">"
-                "<style>"
-                "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; "
-                "line-height: 1.6; color: #111827; padding: 8px 0; "
-                "word-wrap: break-word; overflow-wrap: break-word; }"
-                "a { color: #4D6BFE; }"
-                "blockquote { border-left: 3px solid #E5E7EB; margin-left: 0; padding-left: 16px; "
-                "color: #6B7280; }"
-                "img { max-width: 100% !important; height: auto; }"
-                "table { max-width: 100% !important; }"
-                "pre, code { background: #F3F4F6; border-radius: 6px; padding: 2px 6px; "
-                "font-family: 'Cascadia Code', 'JetBrains Mono', monospace; font-size: 13px; }"
-                "pre { padding: 12px 16px; overflow-x: auto; }"
-                "</style></head><body>"
-                + html_b +
-                "</body></html>"
-            )
-            self.detail_body.setHtml(wrapped, QUrl("http://localhost"))
-        elif text_b:
-            text = text_b.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            text = text.replace("\n", "<br>")
-            self.detail_body.setHtml(
-                "<html><body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
-                "font-size:14px;line-height:1.6;color:#111827;padding:24px 28px;"
-                "background:#F9FAFB;'>"
-                f"<pre style='font-family:\"Cascadia Code\",\"JetBrains Mono\",monospace;"
-                f"font-size:13px;white-space:pre-wrap;color:#111827;margin:0;'>{text}</pre>"
-                "</body></html>"
-            )
-        else:
-            self.detail_body.setHtml(
-                "<html><body style='margin:0;background:#F9FAFB;display:flex;"
-                "align-items:center;justify-content:center;height:100vh;"
-                "font-family:-apple-system,BlinkMacSystemFont,sans-serif;'>"
-                "<p style='color:#D1D5DB;font-size:14px;'>(Empty message)</p>"
-                "</body></html>"
-            )
-
-    def _mark_as_read(self):
-        if self._current_folder == FOLDER_SENT or not self._selected_msg_id:
-            return
-        src = self._active_emails()
-        em = next((e for e in src if e["id"] == self._selected_msg_id), None)
-        if not em or not em.get("unread"):
-            return
-        em["unread"] = False
-        if self._grouped:
-            self._mark_read_in_tree(src)
-        else:
-            self._mark_read_in_list()
-        self._update_count_label()
-
-    def _mark_read_in_list(self):
-        for i in range(self.email_list.count()):
-            item = self.email_list.item(i)
-            if item and item.data(Qt.ItemDataRole.UserRole) == self._selected_msg_id:
-                w = self.email_list.itemWidget(item)
-                if w:
-                    w.set_unread(False)
-                break
-
-    def _mark_read_in_tree(self, src):
-        for ti in range(self.email_tree.topLevelItemCount()):
-            parent = self.email_tree.topLevelItem(ti)
-            for ci in range(parent.childCount()):
-                child = parent.child(ci)
-                if child.data(0, Qt.ItemDataRole.UserRole) == self._selected_msg_id:
-                    cw = self.email_tree.itemWidget(child, 0)
-                    if cw:
-                        cw.set_unread(False)
-                    pw = self.email_tree.itemWidget(parent, 0)
-                    if pw:
-                        pw.update_unread(-1)
-                    return
-
-    def _update_count_label(self):
-        total = len(self._active_emails())
-        unread_count = sum(1 for e in self._active_emails() if e.get("unread"))
-        if self._unread_only:
-            visible = len([e for e in self._active_emails() if e.get("unread")])
-            self.list_count.setText(f"{visible}/{total}")
-        else:
-            self.list_count.setText(f"{total}")
-        self.status_bar.showMessage(
-            f"{total} messages in {'Sent' if self._current_folder == FOLDER_SENT else 'Inbox'}  ({unread_count} unread)"
-        )
-
-    def _resolve_cid_images(self, html: str, inline_images: dict[str, dict]) -> str:
-        def _replace_cid(m: re.Match) -> str:
-            cid = m.group(1)
-            img = inline_images.get(cid)
-            if img:
-                b64 = base64.b64encode(img["data"]).decode()
-                return f'data:{img["content_type"]};base64,{b64}'
-            return m.group(0)
-        html = re.sub(r'(src|url)\s*=\s*["\']cid:([^"\']+)["\']', _replace_cid, html)
-        html = re.sub(r'(src|url)\s*=\s*cid:([a-zA-Z0-9@._-]+)', _replace_cid, html)
-        html = re.sub(r'url\(["\']?\s*cid:([a-zA-Z0-9@._-]+)\s*["\']?\)', _replace_cid, html)
-        html = re.sub(r'cid:([a-zA-Z0-9@._-]+)', _replace_cid, html)
-        return html
+    # ==================================================================
+    # Attachments
+    # ==================================================================
 
     def _show_attachments(self, attachments: list[dict]):
-        # clear previous
         while self._attachments_layout.count():
             child = self._attachments_layout.takeAt(0)
             if child.widget():
@@ -882,16 +809,20 @@ class MainWindow(QMainWindow):
             with open(path, "wb") as f:
                 f.write(att["data"])
 
-    def _on_body_error(self, err: str):
-        self._attachments_box.setVisible(False)
-        self.detail_body.setHtml(
-            "<html><body style='margin:0;background:#F9FAFB;display:flex;"
-            "align-items:center;justify-content:center;height:100vh;"
-            "font-family:-apple-system,BlinkMacSystemFont,sans-serif;'>"
-            f"<p style='color:#EF4444;font-size:14px;font-weight:600;'>"
-            f"Failed to load message</p>"
-            "</body></html>"
-        )
+    @staticmethod
+    def _resolve_cid_images(html: str, inline_images: dict[str, dict]) -> str:
+        def _replace_cid(m: re.Match) -> str:
+            cid = m.group(1)
+            img = inline_images.get(cid)
+            if img:
+                b64 = base64.b64encode(img["data"]).decode()
+                return f'data:{img["content_type"]};base64,{b64}'
+            return m.group(0)
+        html = re.sub(r'(src|url)\s*=\s*["\']cid:([^"\']+)["\']', _replace_cid, html)
+        html = re.sub(r'(src|url)\s*=\s*cid:([a-zA-Z0-9@._-]+)', _replace_cid, html)
+        html = re.sub(r'url\(["\']?\s*cid:([a-zA-Z0-9@._-]+)\s*["\']?\)', _replace_cid, html)
+        html = re.sub(r'cid:([a-zA-Z0-9@._-]+)', _replace_cid, html)
+        return html
 
     # ==================================================================
     # Compose / Send
@@ -909,30 +840,16 @@ class MainWindow(QMainWindow):
             return
         dlg.send_btn.setEnabled(False)
         dlg.send_btn.setText("Sending...")
-        self._send_worker = SendWorker(
-            self._active_cfg, to_addr, dlg.subject_input.text(), dlg.body_input.toPlainText()
-        )
-        self._send_worker.finished.connect(lambda: self._on_sent(dlg))
-        self._send_worker.error.connect(lambda e: self._on_send_error(e, dlg))
-        self._send_worker.start()
-
-    def _on_sent(self, dlg: ComposeDialog):
-        dlg.accept()
-        self.status_bar.showMessage("Message sent")
-        self._refresh_list()
-
-    def _on_send_error(self, err: str, dlg: ComposeDialog):
-        dlg.send_btn.setEnabled(True)
-        dlg.send_btn.setText("Send")
-        QMessageBox.critical(self, "Send Failed", f"Could not send message:\n\n{err}")
+        self._compose_dlg = dlg
+        self._ctrl.send_email(to_addr, dlg.subject_input.text(), dlg.body_input.toPlainText())
 
     # ==================================================================
     # Settings
     # ==================================================================
 
     def _update_account_btn_text(self):
-        a = self.cfg["accounts"][self._active_idx]
-        label = a.get("name", "") or a.get("email", "Unknown")
+        a = self._ctrl.cfg.accounts[self._ctrl.active_idx]
+        label = a.name or a.email or "Unknown"
         self.account_switcher.setText(f"  {label}  ▾")
 
     def _show_account_menu(self):
@@ -955,58 +872,22 @@ class MainWindow(QMainWindow):
             "  color: #111827;"
             "}"
         )
-        accounts = self.cfg.get("accounts", [])
+        accounts = self._ctrl.cfg.accounts
         for i, a in enumerate(accounts):
-            label = a.get("name", "") or a.get("email", "Unknown")
+            label = a.name or a.email or "Unknown"
             action = menu.addAction(label)
             action.setCheckable(True)
-            action.setChecked(i == self._active_idx)
+            action.setChecked(i == self._ctrl.active_idx)
             action.setData(i)
         action = menu.exec(self.account_switcher.mapToGlobal(
             self.account_switcher.rect().bottomLeft()))
         if action and action.data() is not None:
-            self._on_account_switch(action.data())
-
-    def _on_account_switch(self, idx: int):
-        if idx < 0 or idx == self._active_idx:
-            return
-        self._active_idx = idx
-        self.cfg["active"] = idx
-        self._update_account_btn_text()
-        self._current_folder = FOLDER_INBOX
-        self._unread_only = False
-        self._search_text = ""
-        self.search_input.clear()
-        self.filter_btn.setText("All")
-        self.inbox_tab.setObjectName("folder_active")
-        self.sent_tab.setObjectName("")
-        self._filter_pill.setVisible(True)
-        self.group_btn.setVisible(True)
-        self.detail_stack.setCurrentIndex(0)
-        if self._grouped:
-            self._grouped = False
-            self.group_btn.setObjectName("")
-            self._list_stack.setCurrentIndex(0)
-        self.email_list.clear()
-        self.email_tree.clear()
-        cached = self._active_emails()
-        if cached:
-            self._apply_filter()
-        else:
-            self._refresh_list()
+            self._ctrl.switch_account(action.data())
+            self._update_account_btn_text()
 
     def _on_settings(self):
-        dlg = SettingsDialog(self.cfg, self)
+        dlg = SettingsDialog(self._ctrl.cfg, self)
         if dlg.exec() == SettingsDialog.DialogCode.Accepted and dlg.cfg:
-            old_accounts = self.cfg.get("accounts", [])
-            self.cfg = dlg.cfg
-            new_accounts = self.cfg.get("accounts", [])
-            if len(new_accounts) != len(old_accounts) or \
-               any(a.get("email") != b.get("email") for a, b in zip(new_accounts, old_accounts)):
-                self._email_cache.clear()
-                self._sent_cache.clear()
-            self._active_idx = min(self._active_idx, len(new_accounts) - 1)
-            self.cfg["active"] = self._active_idx
+            self._ctrl.apply_config(dlg.cfg)
             if hasattr(self, 'account_switcher'):
                 self._update_account_btn_text()
-            self._refresh_list()

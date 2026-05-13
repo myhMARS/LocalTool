@@ -292,4 +292,53 @@ QToolTip {
     padding: 6px 12px;
     font-size: 12px;
 }
+
+/* ============================================================
+   COMBO BOX
+   ============================================================ */
+QComboBox {
+    background: #FFFFFF;
+    border: 1.5px solid #E5E7EB;
+    border-radius: 10px;
+    padding: 9px 14px;
+    padding-right: 32px;
+    font-size: 13px;
+    color: #111827;
+}
+QComboBox:hover {
+    border-color: #D1D5DB;
+}
+QComboBox:focus {
+    border: 2px solid #4D6BFE;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: right center;
+    width: 26px;
+    border: none;
+    border-top-right-radius: 10px;
+    border-bottom-right-radius: 10px;
+}
+QComboBox::down-arrow {
+    width: 10px;
+    height: 10px;
+}
+QComboBox QAbstractItemView {
+    background: #FFFFFF;
+    border: 1px solid #E5E7EB;
+    border-radius: 10px;
+    padding: 6px;
+    outline: none;
+    selection-background-color: #EEF2FF;
+    selection-color: #111827;
+}
+QComboBox QAbstractItemView::item {
+    padding: 8px 12px;
+    border-radius: 6px;
+    min-height: 32px;
+}
+QComboBox QAbstractItemView::item:hover {
+    background: #F3F4F6;
+}
+
 """

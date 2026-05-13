@@ -1,14 +1,39 @@
 import imaplib
+from contextlib import contextmanager
 from datetime import datetime
 from email.header import decode_header
 from email.message import Message
 from email.utils import parsedate_to_datetime
 
+from localtool.mailer.config import AccountConfig
 
-def connect_imap(cfg: dict):
-    conn = imaplib.IMAP4_SSL(cfg["imap_host"], cfg.get("imap_port", 993))
-    conn.login(cfg["email"], cfg["password"])
+
+def connect_imap(cfg: AccountConfig):
+    conn = imaplib.IMAP4_SSL(cfg.imap_host, cfg.imap_port)
+    conn.login(cfg.email, cfg.password)
     return conn
+
+
+@contextmanager
+def imap_session(cfg: AccountConfig):
+    conn = imaplib.IMAP4_SSL(cfg.imap_host, cfg.imap_port)
+    try:
+        conn.login(cfg.email, cfg.password)
+        yield conn
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
+@contextmanager
+def smtp_session(cfg: AccountConfig):
+    import smtplib
+    with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port) as smtp:
+        smtp.starttls()
+        smtp.login(cfg.email, cfg.password)
+        yield smtp
 
 
 def _safe_charset(charset: str | None) -> str:

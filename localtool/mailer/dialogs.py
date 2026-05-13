@@ -4,7 +4,9 @@ from PyQt6.QtWidgets import (
     QMessageBox, QPushButton, QScrollArea, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from localtool.mailer.config import cache_session_key, load_config, save_config
+from localtool.mailer.config import (
+    AccountConfig, AppConfig, cache_session_key, load_config, save_config,
+)
 from localtool.mailer.style import STYLE
 
 
@@ -100,23 +102,19 @@ class LoginDialog(QDialog):
 class SettingsDialog(QDialog):
     """Account settings with multi-account support."""
 
-    def __init__(self, cfg: dict | None, parent=None):
+    def __init__(self, cfg: AppConfig | None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Account Settings")
         self.setMinimumSize(520, 480)
         self.resize(560, 560)
         self.setStyleSheet(STYLE)
 
-        # normalize to multi-account format for editing
         if cfg is None:
-            self._accounts = []
-        elif "accounts" in cfg:
-            self._accounts = [dict(a) for a in cfg["accounts"]]
+            self._accounts: list[AccountConfig] = []
         else:
-            self._accounts = [dict(cfg)]
+            self._accounts = [a.model_copy() for a in cfg.accounts]
         if not self._accounts:
-            self._accounts = [{"name": "", "email": "", "imap_host": "", "imap_port": 993,
-                               "smtp_host": "", "smtp_port": 587, "password": ""}]
+            self._accounts = [AccountConfig()]
         self._edit_index = 0
 
         root = QVBoxLayout(self)
@@ -167,20 +165,14 @@ class SettingsDialog(QDialog):
 
         sel_label = QLabel("ACCOUNT")
         sel_label.setStyleSheet(
-            "font-size: 11px; font-weight: 700; color: #9CA3AF; letter-spacing: 0.8px;"
+            "font-size: 11px; font-weight: 600; color: #9CA3AF; letter-spacing: 0.3px;"
         )
         sel_layout.addWidget(sel_label)
 
         sel_row = QHBoxLayout()
         sel_row.setSpacing(8)
         self.account_combo = QComboBox()
-        self.account_combo.setMinimumHeight(38)
-        self.account_combo.setStyleSheet(
-            "QComboBox { background: #FFFFFF; border: 1.5px solid #E5E7EB; "
-            "border-radius: 8px; padding: 6px 12px; font-size: 13px; color: #111827; }"
-            "QComboBox:hover { border-color: #D1D5DB; }"
-            "QComboBox:focus { border: 2px solid #4D6BFE; }"
-        )
+        self.account_combo.setMinimumHeight(40)
         self.account_combo.currentIndexChanged.connect(self._on_account_selected)
         sel_row.addWidget(self.account_combo, 1)
 
@@ -209,9 +201,9 @@ class SettingsDialog(QDialog):
             subtitle="Display name and email address",
             form_items=[
                 ("Name", "Work / Personal",
-                 self._active_account().get("name", ""), False, None),
+                 self._active_account().name, False, None),
                 ("Email", "you@example.com",
-                 self._active_account().get("email", ""), False, None),
+                 self._active_account().email, False, None),
             ],
             target=self, field_names=["name_input", "email_input"],
         ))
@@ -222,9 +214,9 @@ class SettingsDialog(QDialog):
             subtitle="IMAP server settings",
             form_items=[
                 ("Host", "imap.example.com",
-                 self._active_account().get("imap_host", ""), False, None),
+                 self._active_account().imap_host, False, None),
                 ("Port", "993",
-                 str(self._active_account().get("imap_port", 993)), False, 100),
+                 str(self._active_account().imap_port), False, 100),
             ],
             target=self, field_names=["imap_host", "imap_port"],
         ))
@@ -235,9 +227,9 @@ class SettingsDialog(QDialog):
             subtitle="SMTP server settings",
             form_items=[
                 ("Host", "smtp.example.com",
-                 self._active_account().get("smtp_host", ""), False, None),
+                 self._active_account().smtp_host, False, None),
                 ("Port", "587",
-                 str(self._active_account().get("smtp_port", 587)), False, 100),
+                 str(self._active_account().smtp_port), False, 100),
             ],
             target=self, field_names=["smtp_host", "smtp_port"],
         ))
@@ -248,7 +240,7 @@ class SettingsDialog(QDialog):
             subtitle="App-specific password recommended",
             form_items=[
                 ("Password", None,
-                 self._active_account().get("password", ""), True, None),
+                 self._active_account().password, True, None),
             ],
             target=self, field_names=["email_pwd"],
         ))
@@ -297,14 +289,14 @@ class SettingsDialog(QDialog):
         self._populate_combo()
         self._update_remove_btn()
 
-    def _active_account(self) -> dict:
+    def _active_account(self) -> AccountConfig:
         return self._accounts[self._edit_index]
 
     def _populate_combo(self):
         self.account_combo.blockSignals(True)
         self.account_combo.clear()
         for a in self._accounts:
-            label = a.get("name", "") or a.get("email", "") or "Unnamed"
+            label = a.name or a.email or "Unnamed"
             self.account_combo.addItem(label)
         self.account_combo.setCurrentIndex(self._edit_index)
         self.account_combo.blockSignals(False)
@@ -321,28 +313,27 @@ class SettingsDialog(QDialog):
 
     def _flush_fields(self):
         a = self._active_account()
-        a["name"] = self.name_input.text()
-        a["email"] = self.email_input.text()
-        a["imap_host"] = self.imap_host.text()
-        a["imap_port"] = int(self.imap_port.text() or 993)
-        a["smtp_host"] = self.smtp_host.text()
-        a["smtp_port"] = int(self.smtp_port.text() or 587)
-        a["password"] = self.email_pwd.text()
+        a.name = self.name_input.text()
+        a.email = self.email_input.text()
+        a.imap_host = self.imap_host.text()
+        a.imap_port = int(self.imap_port.text() or 993)
+        a.smtp_host = self.smtp_host.text()
+        a.smtp_port = int(self.smtp_port.text() or 587)
+        a.password = self.email_pwd.text()
 
     def _fill_fields(self):
         a = self._active_account()
-        self.name_input.setText(a.get("name", ""))
-        self.email_input.setText(a.get("email", ""))
-        self.imap_host.setText(a.get("imap_host", ""))
-        self.imap_port.setText(str(a.get("imap_port", 993)))
-        self.smtp_host.setText(a.get("smtp_host", ""))
-        self.smtp_port.setText(str(a.get("smtp_port", 587)))
-        self.email_pwd.setText(a.get("password", ""))
+        self.name_input.setText(a.name)
+        self.email_input.setText(a.email)
+        self.imap_host.setText(a.imap_host)
+        self.imap_port.setText(str(a.imap_port))
+        self.smtp_host.setText(a.smtp_host)
+        self.smtp_port.setText(str(a.smtp_port))
+        self.email_pwd.setText(a.password)
 
     def _add_account(self):
         self._flush_fields()
-        self._accounts.append({"name": "", "email": "", "imap_host": "", "imap_port": 993,
-                               "smtp_host": "", "smtp_port": 587, "password": ""})
+        self._accounts.append(AccountConfig())
         self._populate_combo()
         self._edit_index = len(self._accounts) - 1
         self.account_combo.setCurrentIndex(self._edit_index)
@@ -364,7 +355,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Error", "Master passwords do not match")
             return
         self._flush_fields()
-        cfg = {"accounts": self._accounts, "active": 0}
+        cfg = AppConfig(accounts=self._accounts, active=0)
         save_config(self.master_pwd.text(), cfg)
         cache_session_key(self.master_pwd.text())
         self.cfg = cfg
@@ -504,8 +495,7 @@ def _card(*, title: str, subtitle: str = "",
 
         lbl = QLabel(label.upper())
         lbl.setStyleSheet(
-            "font-size: 11px; font-weight: 700; color: #9CA3AF; "
-            "letter-spacing: 0.8px; margin-left: 2px;"
+            "font-size: 11px; font-weight: 600; color: #9CA3AF; letter-spacing: 0.3px;"
         )
         row.addWidget(lbl)
 
