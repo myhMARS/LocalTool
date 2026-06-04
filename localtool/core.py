@@ -1,8 +1,6 @@
 import argparse
 import sys
 from abc import ABC
-from importlib.metadata import entry_points
-
 
 EP_GROUP = "localtool.tools"
 
@@ -38,6 +36,8 @@ class BaseTool(ABC):
         """
         if BaseTool._discovered:
             return
+
+        from importlib.metadata import entry_points
 
         # ── entry-points (installed tools) ──
         for ep in entry_points(group=EP_GROUP):

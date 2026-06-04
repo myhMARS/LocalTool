@@ -22,6 +22,7 @@ hash     = "localtool.tools.hash:run"
 httpd    = "localtool.tools.httpd:run"
 ip       = "localtool.tools.ip:run"
 ll       = "localtool.tools.ll:run"
+pj       = "localtool.tools.pj:run"
 
 [project.entry-points."localtool.tools"]
 base64   = "localtool.tools.base64:Base64Tool"
@@ -34,3 +35,4 @@ hash     = "localtool.tools.hash:WinHashTool"
 httpd    = "localtool.tools.httpd:HttpdTool"
 ip       = "localtool.tools.ip:IpTool"
 ll       = "localtool.tools.ll:LlTool"
+pj       = "localtool.tools.pj:PjTool"
