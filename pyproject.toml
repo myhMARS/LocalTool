@@ -5,6 +5,7 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     "cryptography",
     "pillow",
+    "psutil>=7.2.2",
     "pydantic>=2.0",
     "pyqt6",
     "pyqt6-webengine>=6.11.0",
@@ -23,6 +24,7 @@ httpd    = "localtool.tools.httpd:run"
 ip       = "localtool.tools.ip:run"
 ll       = "localtool.tools.ll:run"
 pj       = "localtool.tools.pj:run"
+pt       = "localtool.tools.pt:run"
 
 [project.entry-points."localtool.tools"]
 base64   = "localtool.tools.base64:Base64Tool"
@@ -36,3 +38,4 @@ httpd    = "localtool.tools.httpd:HttpdTool"
 ip       = "localtool.tools.ip:IpTool"
 ll       = "localtool.tools.ll:LlTool"
 pj       = "localtool.tools.pj:PjTool"
+pt       = "localtool.tools.pt:PtTool"

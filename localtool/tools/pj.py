@@ -20,7 +20,7 @@ _MARKER = "# pj shell integration — managed by `pj setup`"
 _PWSH_WRAPPER = f"""\
 {_MARKER}
 function global:pj {{
-    if ($args[0] -eq 'go' -or $args.Count -eq 0) {{
+    if ($args.Count -eq 0 -or $args[0] -notin 'add','remove','setup','list') {{
         $dir = & pj.exe @args
         if ($LASTEXITCODE -eq 0 -and $dir) {{ Set-Location $dir }}
     }} else {{
@@ -32,6 +32,7 @@ Register-ArgumentCompleter -CommandName pj -ScriptBlock {{
     $words = $ast.CommandElements | %{{ $_.ToString().Trim('"','''') }}
     if ($words.Count -eq 2) {{
         @('add','go','remove','setup','list') | ?{{ $_ -like "$word*" }}
+        & pj.exe list 2>$null | ?{{ $_ -like "$word*" }}
     }} elseif ($words.Count -eq 3 -and $words[1] -in 'go','remove') {{
         & pj.exe list 2>$null | ?{{ $_ -like "$word*" }}
     }}
@@ -40,11 +41,11 @@ Register-ArgumentCompleter -CommandName pj -ScriptBlock {{
 _BASH_WRAPPER = f"""\
 {_MARKER}
 pj() {{
-    if [[ "$1" == "go" || $# -eq 0 ]]; then
+    if [[ $# -eq 0 || "$1" != "add" && "$1" != "remove" && "$1" != "setup" && "$1" != "list" ]]; then
         local dir
-        dir=$(pj "$@") && [[ -n "$dir" ]] && cd "$dir"
+        dir=$(command pj "$@") && [[ -n "$dir" ]] && cd "$dir"
     else
-        pj "$@"
+        command pj "$@"
     fi
 }}
 _pj_complete() {{
@@ -53,7 +54,7 @@ _pj_complete() {{
     if [[ $COMP_CWORD -eq 1 ]]; then
         COMPREPLY=($(compgen -W "add go remove setup list" -- "$cur"))
     elif [[ $COMP_CWORD -eq 2 ]] && [[ "$prev" =~ ^(go|remove)$ ]]; then
-        COMPREPLY=($(compgen -W "$(pj list 2>/dev/null)" -- "$cur"))
+        COMPREPLY=($(compgen -W "$(command pj list 2>/dev/null)" -- "$cur"))
     fi
 }}
 complete -F _pj_complete pj"""
@@ -61,11 +62,11 @@ complete -F _pj_complete pj"""
 _ZSH_WRAPPER = f"""\
 {_MARKER}
 pj() {{
-    if [[ "$1" == "go" || $# -eq 0 ]]; then
+    if [[ $# -eq 0 || "$1" != "add" && "$1" != "remove" && "$1" != "setup" && "$1" != "list" ]]; then
         local dir
-        dir=$(pj "$@") && [[ -n "$dir" ]] && cd "$dir"
+        dir=$(command pj "$@") && [[ -n "$dir" ]] && cd "$dir"
     else
-        pj "$@"
+        command pj "$@"
     fi
 }}
 _pj() {{
@@ -74,7 +75,7 @@ _pj() {{
         _describe 'command' commands
     elif (( CURRENT == 3 )); then
         case $words[2] in
-            go|remove) local -a projects; projects=(${{(f)"$(pj list 2>/dev/null)"}}); _describe 'project' projects ;;
+            go|remove) local -a projects; projects=(${{(f)"$(command pj list 2>/dev/null)"}}); _describe 'project' projects ;;
         esac
     fi
 }}
@@ -83,15 +84,15 @@ compdef _pj pj"""
 _FISH_WRAPPER = f"""\
 {_MARKER}
 function pj
-    if test "$argv[1]" = go -o (count $argv) -eq 0
-        set dir (pj $argv)
+    if test (count $argv) -eq 0 -o ! contains "$argv[1]" add remove setup list
+        set dir (command pj $argv)
         test -n "$dir" -a -d "$dir" && cd "$dir"
     else
-        pj $argv
+        command pj $argv
     end
 end
 complete -c pj -f -n 'test (count (commandline -opc)) -eq 1' -a 'add go remove setup list'
-complete -c pj -f -n 'test (count (commandline -opc)) -eq 2; and contains (commandline -opc)[2] go remove' -a '(pj list 2>/dev/null)'"""
+complete -c pj -f -n 'test (count (commandline -opc)) -eq 2; and contains (commandline -opc)[2] go remove' -a '(command pj list 2>/dev/null)'"""
 
 _WRAPPERS: dict[str, str] = {
     "powershell": _PWSH_WRAPPER,
@@ -310,6 +311,10 @@ class PjTool(BaseTool):
     # ── run ──────────────────────────────────────────────────────────
 
     def run(self, args: list[str] | None = None) -> int:
+        # `pj <name>` is shorthand for `pj go <name>`
+        if args and len(args) >= 1 and args[0] not in ("add", "go", "remove", "setup", "list", "-h", "--help"):
+            args = ["go"] + args
+
         parser = self.make_parser()
         sub = parser.add_subparsers(dest="command")
 
